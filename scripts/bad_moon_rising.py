@@ -492,7 +492,10 @@ def day_ability(game: Game, p: Player, options: dict) -> None:
     elif p.character == "moonchild":
         if p.alive:
             raise game.error("The Moonchild chooses when they learn they died")
+        if p.used:
+            raise game.error("The Moonchild already chose")
         t = game.get(options.get("target"))
+        p.used = True
         S["moonchild"] = t.pid
         game._announce(f"{p.name}, the Moonchild, chooses {t.name}.")
     else:

@@ -55,6 +55,17 @@ test("dayModel lists the Slayer once and not after use", () => {
   assert.deepEqual(dayModel(v, DC).abilities, []);
 });
 
+test("dayModel offers the dead Moonchild's choice until it is used, and flags the Mastermind's extra day", () => {
+  const v = dv({clock: null, nominations_full: [], extra_day: null});
+  v.players.push({pid: "p5", name: "Ema", character: "moonchild", alive: false, ghost_vote: true, reminders: [], ability: {uses: "on_death", used: false}});
+  assert.ok(dayModel(v, DC).abilities.some(a => a.kind === "moonchild"));
+  v.players[4].ability.used = true;
+  assert.ok(!dayModel(v, DC).abilities.some(a => a.kind === "moonchild"));
+  assert.equal(dayModel(v, DC).dusk.mastermind, false);
+  assert.equal(dayModel({...v, extra_day: 2}, DC).dusk.mastermind, true);
+  assert.equal(dayModel({...v, extra_day: 3}, DC).dusk.mastermind, false);
+});
+
 const NC = {
   sailor: {name: "Sailor", uses: "each_night", hint: "h1"}, gossip: {name: "Gossip", uses: "day", hint: "h2"},
   po: {name: "Po", uses: "each_night", hint: "h3"}, courtier: {name: "Courtier", uses: "once_per_game", hint: "h4"},
@@ -148,8 +159,8 @@ test("drawerModel: gossip and dead moonchild expose their day actions; thread is
   const v = dayView([pl("p1", "gossip"), pl("p2", "moonchild", {alive: false}), pl("p3", "imp")], {threads: {p1: thread}});
   assert.equal(drawerModel(v.players[0], v, CH).ability.kind, "gossip");
   assert.equal(drawerModel(v.players[1], v, CH).ability.kind, "moonchild");
-  const picked = {...v, announcements: ["P2, the Moonchild, chooses P3."]};
-  assert.equal(drawerModel(v.players[1], picked, CH).ability.kind, "none");
+  const picked = {...v, players: [v.players[0], {...v.players[1], ability: {uses: "on_death", used: true}}, v.players[2]]};
+  assert.equal(drawerModel(picked.players[1], picked, CH).ability.kind, "none");
   assert.deepEqual(drawerModel(v.players[0], v, CH).thread.map(m => m.text), ["a", "b"]);
   assert.equal(drawerModel(v.players[0], v, CH).unread, 1);
 });
@@ -184,6 +195,14 @@ test("tokenMarks pips and chips", () => {
   assert.equal(tokenMarks({pid: "p2", character: "soldier", ability: {uses: "passive", used: false}, reminders: []}, v, C).pip, null);
   assert.deepEqual(tokenMarks({pid: "p3", character: "imp", ability: {uses: "each_night"}, reminders: ["drunk 2", "protected", "grandchild", "died today", "whatever"]}, v, C).chips.map(c => c.cls),
     ["poison", "safe", "info", "death", ""]);
+});
+
+test("tokenMarks adds a note chip while a player's message is unseen", () => {
+  const v = {phase: "day", clock: null, steps: [], hands: [], threads: {p1: [{id: 1, from: "player", text: "hi", label: "Day 1", seen: false}]}};
+  assert.deepEqual(tokenMarks({pid: "p1", character: "imp", ability: {uses: "each_night"}, reminders: ["poisoned"]}, v, C).chips,
+    [{text: "poisoned", cls: "poison"}, {text: "note", cls: "note"}]);
+  v.threads.p1[0].seen = true;
+  assert.deepEqual(tokenMarks({pid: "p1", character: "imp", ability: {uses: "each_night"}, reminders: []}, v, C).chips, []);
 });
 
 test("tokenMarks vote marks and lit step", () => {

@@ -34,6 +34,7 @@ export function tokenMarks(p, v, C) {
   const once = ONCE.has(uses);
   const name = C[p.character]?.name ?? p.character;
   const chips = (p.reminders || []).map(text => ({text, cls: chipClass(text)}));
+  if ((v.threads?.[p.pid] ?? []).some(m => m.from === "player" && !m.seen)) chips.push({text: "note", cls: "note"});
   let vote = null;
   const c = v.clock;
   if (c && c.state !== "done") {
@@ -80,9 +81,8 @@ export function drawerModel(p, v, C) {
   if (p.character === "gossip" && v.phase === "day" && p.alive) { title = "Gossip's statement"; kind = "gossip"; state = "Today"; }
   if (p.character === "moonchild") {
     title = "Moonchild's choice";
-    const picked = (v.announcements || []).some(a => a.includes("the Moonchild, chooses"));
-    if (!p.alive && !picked && v.phase === "day") kind = "moonchild";
-    state = picked ? "Chosen" : p.alive ? "Alive" : "Waiting for their pick";
+    if (!p.alive && !used && v.phase === "day") kind = "moonchild";
+    state = used ? "Chosen" : p.alive ? "Alive" : "Waiting for their pick";
   }
   const own = (c?.reminders ?? []).filter(t => !p.reminders.includes(t));
   const options = [...own, ...GLOBAL_REMINDERS.filter(t => !own.includes(t) && !p.reminders.includes(t))];
@@ -196,8 +196,7 @@ export function dayModel(v, C) {
     label: p.character === "slayer" ? "Slayer, shot unused" : `${C[p.character]?.name ?? p.character}, today`,
     kind: p.character === "slayer" ? "shoot" : p.character === "gossip" ? "gossip" : "none",
   }));
-  const picked = (v.announcements || []).some(a => a.includes("the Moonchild, chooses"));
-  for (const p of v.players) if (p.character === "moonchild" && !p.alive && !picked) abilities.push({pid: p.pid, name: p.name, label: "Moonchild, chooses a player", kind: "moonchild"});
+  for (const p of v.players) if (p.character === "moonchild" && !p.alive && !p.ability?.used) abilities.push({pid: p.pid, name: p.name, label: "Moonchild, chooses a player", kind: "moonchild"});
   const recorded = nominations.filter(n => n.state === "recorded" && n.votes >= v.threshold);
   const top = recorded.length ? Math.max(...recorded.map(n => n.votes)) : 0;
   const leaders = recorded.filter(n => n.votes === top);
@@ -209,7 +208,7 @@ export function dayModel(v, C) {
     announcements: v.announcements || [],
     hands: (v.hands || []).map(pid => ({pid, name: name(pid)})),
     nominations, abilities,
-    dusk: {text, pending, mastermind: (v.announcements || []).some(a => a.includes("one more day")), canEnd: !live && !pending.length},
+    dusk: {text, pending, mastermind: v.extra_day !== null && v.extra_day !== undefined && v.extra_day === v.day, canEnd: !live && !pending.length},
   };
 }
 

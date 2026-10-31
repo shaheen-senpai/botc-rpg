@@ -2,7 +2,7 @@
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
 import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel, messagesModel } from "./stmodel.js";
-import { handAngle, handIndex, serverNow } from "./clockmath.js";
+import { handAngle, handIndex, elapsed, serverNow } from "./clockmath.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
@@ -47,7 +47,8 @@ async function act(action, body = {}, clearPrefix = null) {
     const before = S?.script?.id;
     S = await api(`/api/st/${action}?key=${encodeURIComponent(KEY)}`, body);
     receivedAt = Date.now();
-    if (clearPrefix) Object.keys(dirty).filter(k => k.startsWith(clearPrefix)).forEach(k => delete dirty[k]);
+    // a trailing ":" means "exactly this id" (t-1 must not clear t-10); otherwise a prefix
+    if (clearPrefix) Object.keys(dirty).filter(k => clearPrefix.endsWith(":") ? k === clearPrefix.slice(0, -1) : k.startsWith(clearPrefix)).forEach(k => delete dirty[k]);
     lastVersion = S.version;
     if (S.script.id !== before) C = await api("/api/characters");
     render();
@@ -117,7 +118,7 @@ function gear() {
     <label><input type="checkbox" ${S.night_check ? "checked" : ""} onchange="act('set_night_check', {on: this.checked})"> Night check (phones tap three icons at night; off for remote games)</label>
     <label>Seconds a seat <select onchange="localStorage.setItem('tb_seat_seconds', this.value)">${[2, 3, 4, 5].map(n => `<option ${n === seatSeconds() ? "selected" : ""}>${n}</option>`).join("")}</select></label>
     <label><input type="checkbox" ${sound.muted() ? "checked" : ""} onchange="sound.mute(this.checked)"> Mute the clock</label>
-    ${S.phase === "lobby" && !S.players.length ? `<button class="btn quiet small" onclick="changeScript()">Change script</button>` : ""}
+    ${S.phase === "lobby" ? `<button class="btn quiet small" onclick="changeScript()">Change script</button>` : ""}
     ${started ? `<div class="line"><span class="dim">End the game early</span><button class="btn quiet small" onclick="act('declare_winner', {team:'good'})">Good wins</button><button class="btn quiet small" onclick="act('declare_winner', {team:'evil'})">Evil wins</button></div>` : ""}
   </div></details>`;
 }
@@ -152,38 +153,46 @@ function square() {
   return spots + `<div class="center" id="center">${centre()}</div>`;
 }
 
-// a clock worth drawing: live, or finished less than ten seconds ago
+// a clock worth drawing: live, or finished less than ten seconds ago (on the server's clock)
 function dialClock() {
   const c = S.clock;
   if (!c || S.phase !== "day") return null;
-  if (c.state === "done" && !S.nominations_full[c.nomination]?.clock) return null;
+  if (c.state === "done") {
+    const end = c.go_at + c.paused_total + S.players.length * c.seat_seconds;
+    if (serverNow(S, receivedAt) > end + 10) return null;
+  }
   return c;
+}
+
+function countdownDigit(c, now) {
+  const left = -elapsed(c, now);
+  return left > 0 ? String(Math.min(3, Math.ceil(left))) : "";
 }
 
 function dial(c) {
   const seats = S.players.map(p => p.pid);
   const now = serverNow(S, receivedAt);
-  const idx = handIndex(c, now);
-  const n = S.players.length;
   const yes = Object.values(c.locked).filter(Boolean).length;
+  const done = c.state === "done";
   return `<div class="dial" aria-hidden="true"><div class="hand" id="hand" style="transform: rotate(${handAngle(seats, c, now)}deg)"></div><div class="boss"></div>
-      <div class="count" id="count">${idx < 0 ? Math.min(3, Math.ceil(-idx * c.seat_seconds / 1)) || "" : ""}</div></div>
+      <div class="count" id="count">${countdownDigit(c, now)}</div></div>
     <div class="dial-text"><h2 class="small">${esc(pname(c.nominator))} nominates ${esc(pname(c.nominee))}</h2>
-      <p>${c.state === "done" ? `${yes} ${yes === 1 ? "vote" : "votes"} · ${S.threshold} to execute` : `${yes} so far · ${S.threshold} to execute`}</p>
-      <p class="tiny">${c.seat_seconds} s a seat · Space ${c.state === "paused" ? "resumes" : "pauses"}${c.state === "paused" ? " · paused" : ""}</p></div>`;
+      <p>${done ? `${yes} ${yes === 1 ? "vote" : "votes"} · ${S.threshold} to execute` : `${yes} so far · ${S.threshold} to execute`}</p>
+      <p class="tiny">${done ? "Finished" : `${c.seat_seconds} s a seat · Space ${c.state === "paused" ? "resumes" : "pauses"}${c.state === "paused" ? " · paused" : ""}`}</p></div>`;
 }
 
 // between polls: move the hand and the countdown on the server's clock; sound at go and at each seat
 function tickDial() {
   const c = dialClock();
   const hand = el("hand");
+  if (!c && hand) { render(); return; }   // the finished clock's ten seconds are up: back to the phase card
   if (!c || !hand) { lastHandIdx = null; return; }
   const now = serverNow(S, receivedAt);
   const seats = S.players.map(p => p.pid);
   hand.style.transform = `rotate(${handAngle(seats, c, now)}deg)`;
   const idx = c.state === "paused" ? lastHandIdx : handIndex(c, now);
   const count = el("count");
-  if (count) count.textContent = idx < 0 ? String(Math.min(3, Math.ceil((c.go_at - now)))) : "";
+  if (count) count.textContent = countdownDigit(c, now);
   if (lastHandIdx !== null && idx !== null && idx > lastHandIdx && c.state !== "done") {
     if (lastHandIdx < 0 && idx >= 0) sound.chime();
     else if (idx <= seats.length) sound.tick();
@@ -213,7 +222,7 @@ function pick(pid) {
   if (mode === "nominee") {
     const a = pendingNominator;
     mode = "none"; pendingNominator = null;
-    act("nominate", {nominator: a, nominee: pid, spy_as_townsfolk: !!val("nom-spy")});
+    act("nominate", {nominator: a, nominee: pid, spy_as_townsfolk: !!(val("nom-spy") ?? dirty["nom-spy"])});
     return;
   }
   if (S.clock && !["done"].includes(S.clock.state)) {
@@ -284,7 +293,7 @@ function installDrag() {
 function column() {
   if (view === "drawer" && selected) return drawer();
   if (view === "messages") return messages();
-  if (S.phase === "lobby" && !S.players.length && !sessionStorage.getItem("tb_script_chosen")) return picker();
+  if (S.phase === "lobby" && !sessionStorage.getItem("tb_script_chosen")) return picker();
   return ({lobby, setup, night, day, over})[S.phase]() + tools() + logBlock();
 }
 
@@ -299,12 +308,12 @@ function picker() {
       <p class="note">${esc(BLURB[s.id]?.[0] ?? "")}</p>
       <p>${esc(BLURB[s.id]?.[1] ?? "")}</p>
       <p class="note">${s.counts.townsfolk} Townsfolk · ${s.counts.outsider} Outsiders · ${s.counts.minion} Minions · ${s.counts.demon} ${s.counts.demon === 1 ? "Demon" : "Demons"}</p>
-      <button class="btn" onclick="chooseScript('${esc(s.id)}')">Run ${esc(s.name)}</button></article>`).join("");
-  return `<h2>Which script tonight?</h2><p class="lede">Players join after this. You can change your mind until the first person takes a seat.</p>${cards}`;
+      <button class="btn ${s.id === S.script.id ? "" : "quiet"}" onclick="chooseScript('${esc(s.id)}')">${s.id === S.script.id ? "Continue with" : "Run"} ${esc(s.name)}</button></article>`).join("");
+  return `<h2>Which script tonight?</h2><p class="lede">${S.players.length ? `${S.players.length} seated; nothing is dealt yet, so the script can still change.` : "Players join after this."}</p>${cards}`;
 }
 
 async function chooseScript(id) {
-  if (await act("set_script", {script: id})) { sessionStorage.setItem("tb_script_chosen", "1"); render(); }
+  if (id === S.script.id || await act("set_script", {script: id})) { sessionStorage.setItem("tb_script_chosen", "1"); render(); }
 }
 
 async function copyLink() {
@@ -475,12 +484,12 @@ function stepCard(c) {
       ${k.variable ? `<p class="note">Nobody, one player, or three after a night of nobody.</p>` : ""}
       ${k.extras.map(x => extraInput(i, x)).join("")}`;
     const picks = `[${[...Array(k.selects).keys()].map(n => `val('c-${i}-${n}')`).join(",")}].filter(Boolean)`;
-    const apply = `act('resolve', {step:${i}, choices:${picks}${extrasArgs(i, k)}}, 'c-${i}')`;
+    const apply = `act('resolve', {step:${i}, choices:${picks}${extrasArgs(i, k)}}, 'c-${i}-').then(() => Object.keys(dirty).filter(x => x.startsWith('x-${i}-')).forEach(x => delete dirty[x]))`;
     if (k.text === null) primary = `<button class="btn small primary" onclick="${apply}">Apply</button>`;
     else {
       // the pick is applied and produced information: hold the (editable) text for dawn
       body += `<label class="field"><span>What they learn (edit if someone is drunk, poisoned, or misregisters)</span><textarea id="t-${i}">${esc(k.text)}</textarea></label>`;
-      primary = `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}')">Hold for dawn</button>
+      primary = `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}:')">Hold for dawn</button>
         <button class="btn quiet small" onclick="${apply}">Apply again</button>`;
     }
   } else if (k.kind === "storyteller") {
@@ -495,7 +504,7 @@ function stepCard(c) {
     if (k.text !== null) body += `<label class="field"><span>What they learn (edit if someone is drunk, poisoned, or misregisters)</span><textarea id="t-${i}">${esc(k.text)}</textarea></label>`;
     primary = k.text === null
       ? `<button class="btn small primary" onclick="act('resolve', {step:${i}, choices:[]})">${esc(k.primary)}</button>`
-      : `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}')">${esc(k.primary)}</button>`;
+      : `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}:')">${esc(k.primary)}</button>`;
   }
   body += `<div class="line">${primary}<button class="btn quiet small" style="margin-left:auto" onclick="ui.open(null, false); act('finish_step', {step:${i}, done:true})">Skip</button></div>`;
   return `<li class="step open">${num}${head}${body}</li>`;
@@ -520,9 +529,11 @@ function night() {
       ${waitNote}<button class="btn" ${n.dawn.blocked || n.dawn.pending.length ? "disabled" : ""} onclick="ui.open(null, false); act('start_day')">Deliver everything and start day ${S.day + 1}</button></div>`;
 }
 
+// shortcuts only when nothing is focused: a focused button or field keeps its own Enter and Space
+const idleFocus = () => !document.activeElement || document.activeElement === document.body;
+
 function nightKey(e) {
-  if (S?.phase !== "night" || view !== "ledger") return false;
-  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return false;
+  if (S?.phase !== "night" || view !== "ledger" || !idleFocus() || e.metaKey || e.ctrlKey || e.altKey) return false;
   const n = nightCards(S, C, openStep);
   const idx = n.cards.findIndex(c => c.state === "open");
   if (e.key === "Enter") { document.querySelector(".step.open .primary")?.click(); return true; }
@@ -535,8 +546,8 @@ function nightKey(e) {
   return false;
 }
 
-function toggleVote(i, pid) {
-  const set = voteDraft[i];
+function toggleVote(key, pid) {
+  const set = voteDraft[key];
   set.has(pid) ? set.delete(pid) : set.add(pid);
   render();
 }
@@ -553,11 +564,13 @@ function nominationCard(n) {
   const pill = {idle: ["Not started", "calm"], countdown: ["Starting", ""], running: ["Clock running", "wait"], paused: ["Paused", "calm"], done: ["Finished", "calm"], recorded: [`${n.votes} ${n.votes === 1 ? "vote" : "votes"}${n.votes >= n.threshold ? ", enough" : ""}`, n.votes >= n.threshold ? "wait" : "calm"]}[n.state];
   const live = ["countdown", "running", "paused"].includes(n.state);
   const nom = S.nominations_full[i];
-  voteDraft[i] ??= new Set(nom.voters);
+  // the draft is keyed by the recorded tally too, so a clock's auto-record reseeds it
+  const dk = `${i}:${nom.votes}`;
+  voteDraft[dk] ??= new Set(nom.voters);
   const eligible = S.players.filter(p => p.alive || p.ghost_vote || nom.voters.includes(p.pid));
   const rerecord = n.state === "recorded" || n.state === "idle" ? `<details class="tools small"><summary>${n.state === "recorded" ? "Re-record by hand" : "Record by hand instead"}</summary>
-      <div class="chips">${eligible.map(p => `<button class="chip ${p.alive ? "" : "ghost"}" aria-pressed="${voteDraft[i].has(p.pid)}" onclick="toggleVote(${i}, '${p.pid}')">${esc(p.name)}</button>`).join("")}</div>
-      <button class="btn quiet small" onclick="act('record_votes', {nomination:${i}, voters:[...voteDraft[${i}]]}).then(() => delete voteDraft[${i}])">Record ${voteDraft[i].size} ${voteDraft[i].size === 1 ? "vote" : "votes"}</button></details>` : "";
+      <div class="chips">${eligible.map(p => `<button class="chip ${p.alive ? "" : "ghost"}" aria-pressed="${voteDraft[dk].has(p.pid)}" onclick="toggleVote('${dk}', '${p.pid}')">${esc(p.name)}</button>`).join("")}</div>
+      <button class="btn quiet small" onclick="act('record_votes', {nomination:${i}, voters:[...voteDraft['${dk}']]}).then(() => delete voteDraft['${dk}'])">Record ${voteDraft[dk].size} ${voteDraft[dk].size === 1 ? "vote" : "votes"}</button></details>` : "";
   return `<div class="card-soft ${live ? "live" : ""}">
     <div class="line" style="justify-content:space-between;margin:0"><span class="disp">${esc(n.text)}</span><span class="pill ${pill[1]}">${esc(pill[0])}</span></div>
     ${live || n.state === "done" ? `<p class="note">Locked as the hand passes: ${n.locked.map(chip).join("") || "nobody yet"}</p>
@@ -573,9 +586,10 @@ function day() {
   const hands = m.hands.length ? m.hands.map(h => `<div class="row-line"><span><b>${esc(h.name)}</b> <span class="note inline">wants to nominate</span></span>
       <span style="margin-left:auto;display:flex;gap:.4rem"><button class="btn small" onclick="ui.nominateFrom(${q(h.pid)})">Nominate…</button><button class="btn quiet small" onclick="act('set_hand', {pid:${q(h.pid)}, up:false})">Lower</button></span></div>`).join("")
     : `<p class="note">Nobody has a hand up.</p>`;
+  const spy = `<label class="note inline"><input type="checkbox" id="nom-spy"> A Spy nominating the Virgin registers as Townsfolk</label>`;
   const nominate = mode !== "none"
-    ? `<p class="note hint">${mode === "nominator" ? "Click the player who nominates." : `Now click the player ${esc(pname(pendingNominator))} nominates.`} <button class="btn quiet small" onclick="ui.cancelPick()">Cancel</button></p>`
-    : `<div class="line"><button class="btn quiet small" onclick="ui.nominateFrom(null)">Nominate by clicking tokens</button><label class="note inline"><input type="checkbox" id="nom-spy"> A Spy nominating the Virgin registers as Townsfolk</label></div>`;
+    ? `<p class="note hint">${mode === "nominator" ? "Click the player who nominates." : `Now click the player ${esc(pname(pendingNominator))} nominates.`} <button class="btn quiet small" onclick="ui.cancelPick()">Cancel</button></p><div class="line">${spy}</div>`
+    : `<div class="line"><button class="btn quiet small" onclick="ui.nominateFrom(null)">Nominate by clicking tokens</button>${spy}</div>`;
   const abilities = m.abilities.length ? m.abilities.map(a => `<div class="row-line"><span><b>${esc(a.label.split(",")[0])}</b> <span class="note inline">· ${esc(a.name)}${a.label.includes(",") ? "," + esc(a.label.split(",").slice(1).join(",")) : ""}</span></span>
       <button class="btn quiet small" style="margin-left:auto" onclick="ui.openDrawer(${q(a.pid)})">${a.kind === "shoot" ? "Shoot…" : a.kind === "gossip" ? "True / false" : "Choose…"}</button></div>`).join("") : `<p class="note">Nothing to use today.</p>`;
   const pending = m.dusk.pending.map(d => `<div class="line"><span><b>${esc(d.name)}</b> <span class="note inline">${esc(d.why)}</span></span>
@@ -626,12 +640,12 @@ const ui = {
   log(v) { logOpen = v; },
   deselect() { selected = null; view = "ledger"; },
 };
-Object.assign(window, {act, pick, closeDrawer, showMessages, changeScript, chooseScript, copyLink, toggleVote, val, voteDraft, sound, render, ui});
+Object.assign(window, {act, pick, closeDrawer, showMessages, changeScript, chooseScript, copyLink, toggleVote, val, voteDraft, dirty, sound, render, ui});
 
 document.addEventListener("input", e => { if (e.target.id) dirty[e.target.id] = e.target.type === "checkbox" ? e.target.checked : e.target.value; });
 document.addEventListener("pointerdown", () => sound.unlock(), {once: true});
 function spaceKey() {
-  if (S?.phase !== "day" || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return false;
+  if (S?.phase !== "day" || !idleFocus()) return false;
   const c = S.clock && S.clock.state !== "done" ? S.clock : null;
   if (c) { act(c.state === "paused" ? "resume_clock" : "pause_clock"); return true; }
   const idle = S.nominations_full.findIndex(n => n.votes === null && !n.clock);
@@ -651,7 +665,6 @@ document.addEventListener("keydown", e => {
 addEventListener("resize", () => el("square") && fitNames(el("square")));
 
 installDrag();
-api("/api/scripts").then(s => { SCRIPTS = s; });
-api("/api/characters").then(c => { C = c; lastVersion = -1; poll(); });
+Promise.all([api("/api/scripts"), api("/api/characters")]).then(([s, c]) => { SCRIPTS = s; C = c; lastVersion = -1; poll(); });
 setInterval(poll, 1200);
 setInterval(tickDial, 100);

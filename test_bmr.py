@@ -426,3 +426,22 @@ def test_chambermaid_ignores_storyteller_steps():
     g.resolve(step(g, "tinker"), [], dies=False)
     g.resolve(step(g, "chambermaid"), [p(g, "Finn").pid, p(g, "Dev").pid])   # the Tinker did not wake; the Sailor has not acted
     assert g.steps[step(g, "chambermaid")]["suggestion"] == "0 of them woke tonight."
+
+
+def test_moonchild_chooses_once():
+    g = make(["po", "assassin", "moonchild", "sailor", "gambler", "tinker", "fool"])
+    g.start_day()
+    g.kill(p(g, "Chen").pid)
+    g.day_ability(p(g, "Chen").pid, {"target": p(g, "Ema").pid})
+    assert p(g, "Chen").used and g.storyteller_view()["players"][2]["ability"]["used"] is True
+    with pytest.raises(GameError, match="already chose"):
+        g.day_ability(p(g, "Chen").pid, {"target": p(g, "Finn").pid})
+
+
+def test_mastermind_extra_day_is_in_the_views():
+    g = make(["po", "mastermind", "sailor", "gossip", "gambler", "tinker", "fool"])
+    g.start_day()
+    assert g.public_view()["extra_day"] is None
+    execute(g, "Chen", "Asha")
+    g.start_day()
+    assert g.public_view()["extra_day"] == 2 and g.storyteller_view()["extra_day"] == 2

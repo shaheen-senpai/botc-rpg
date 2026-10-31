@@ -1230,6 +1230,8 @@ class Game:
             "nominations": [{"nominator": self.get(n["nominator"]).name, "nominee": self.get(n["nominee"]).name,
                              "votes": n["votes"]} for n in self.nominations],
             "hands": [p.pid for p in self.players if p.hand], "clock": self._clock_view(),
+            # the day number the game goes on to after the Demon's execution (the Mastermind), else None
+            "extra_day": self.script_state.get("extra_day"),
             "winner": self.winner, "win_reason": self.win_reason,
         }
 
