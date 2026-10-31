@@ -694,16 +694,21 @@ class Game:
     # --- hands ---
 
     def raise_hand(self, token: str, up: bool) -> None:
-        """Player raises or lowers their hand (day only): to ask to nominate."""
+        """Player raises or lowers their hand (day only): a vote while the clock runs, else to ask to nominate."""
         p = self.by_token(token)
+        self._require("day")
+        if self._vote_hand(p, up):
+            return
         if not p.alive:
             raise GameError("Dead players cannot nominate")
         self.set_hand(p.pid, up)
 
     def set_hand(self, pid: str, up: bool) -> None:
-        """Storyteller raises or lowers a player's hand on their behalf."""
+        """Storyteller raises or lowers a player's hand on their behalf (vote or nomination queue)."""
         self._require("day")
         p = self.get(pid)
+        if self._vote_hand(p, up):
+            return
         p.hand = bool(up)
         if p.pid in self.hand_order:
             self.hand_order.remove(p.pid)
@@ -715,6 +720,165 @@ class Game:
             if pids is None or p.pid in pids:
                 p.hand = False
         self.hand_order = [pid for pid in self.hand_order if self.get(pid).hand]
+
+    # --- the vote clock ---
+    # Nomination "clock" schema: None | {"state": "countdown" | "running" | "paused" | "done", "go_at": float,
+    # "seat_seconds": int, "paused_at": float | None, "paused_total": float,
+    # "hands": {pid: bool}, "locked": {pid: bool | None}}. Seats lock from the server's clock, never a timer.
+
+    COUNTDOWN_SECONDS = 3
+
+    def _nomination(self, index: int) -> dict:
+        if not 0 <= index < len(self.nominations):
+            raise GameError("No such nomination")
+        return self.nominations[index]
+
+    def _live_clock(self) -> tuple[int, dict] | None:
+        """(nomination index, clock) of the clock that is not finished, if any."""
+        for i, n in enumerate(self.nominations):
+            if n.get("clock") and n["clock"]["state"] != "done":
+                return i, n["clock"]
+        return None
+
+    def _latest_clock(self) -> tuple[int, dict] | None:
+        """The live clock, else the most recent finished one."""
+        live = self._live_clock()
+        if live:
+            return live
+        for i in range(len(self.nominations) - 1, -1, -1):
+            if self.nominations[i].get("clock"):
+                return i, self.nominations[i]["clock"]
+        return None
+
+    def start_clock(self, nomination: int, seat_seconds: int = 3) -> None:
+        """Start the vote: a 3 second countdown, then the hand sweeps one seat per seat_seconds from the nominee.
+
+        Hands raised before the clock carry over as votes-in-waiting.
+        """
+        self._require("day")
+        if self._live_clock():
+            raise GameError("A clock is already running")
+        n = self._nomination(nomination)
+        if n["votes"] is not None:
+            raise GameError("This nomination already has votes")
+        if not 1 <= int(seat_seconds) <= 10:
+            raise GameError("Seconds a seat must be between 1 and 10")
+        n["clock"] = {"state": "countdown", "go_at": self.clock() + self.COUNTDOWN_SECONDS, "seat_seconds": int(seat_seconds),
+                      "paused_at": None, "paused_total": 0.0,
+                      "hands": {p.pid: p.hand for p in self.players}, "locked": {p.pid: None for p in self.players}}
+        self._lower_hands()
+        self._log(f"Clock started on {self.get(n['nominator']).name}'s nomination of {self.get(n['nominee']).name}")
+
+    def _require_live_clock(self) -> tuple[int, dict]:
+        self._require("day")
+        self._sync_clock()
+        live = self._live_clock()
+        if not live:
+            raise GameError("No clock is running")
+        return live
+
+    def pause_clock(self) -> None:
+        """Freeze the hand where it is."""
+        i, c = self._require_live_clock()
+        if c["state"] == "paused":
+            return
+        c["state"], c["paused_at"] = "paused", self.clock()
+        self._log("Clock paused")
+
+    def resume_clock(self) -> None:
+        """Let the hand move again from where it stopped."""
+        i, c = self._require_live_clock()
+        if c["state"] != "paused":
+            return
+        c["paused_total"] += self.clock() - c["paused_at"]
+        c["paused_at"], c["state"] = None, "running"
+        self._sync_clock()
+        self._log("Clock resumed")
+
+    def restart_clock(self) -> None:
+        """Back to the countdown with every seat unlocked; raised hands stay raised."""
+        i, c = self._require_live_clock()
+        c.update({"state": "countdown", "go_at": self.clock() + self.COUNTDOWN_SECONDS, "paused_at": None, "paused_total": 0.0,
+                  "locked": {p.pid: None for p in self.players}})
+        self._log("Clock restarted")
+
+    def stop_clock(self) -> None:
+        """Abandon the vote; the nomination stays, unvoted."""
+        i, c = self._require_live_clock()
+        self.nominations[i]["clock"] = None
+        self._log("Clock stopped")
+
+    def clock_elapsed(self, c: dict) -> float:
+        """Seconds since "go", not counting pauses; negative during the countdown."""
+        now = c["paused_at"] if c["paused_at"] is not None else self.clock()
+        return now - c["go_at"] - c["paused_total"]
+
+    def hand_index(self, c: dict) -> int:
+        """How many seats past the nominee the hand has swept (0 = on the nominee, negative = counting down)."""
+        return math.floor(self.clock_elapsed(c) / c["seat_seconds"])
+
+    def seat_offset(self, nominee_pid: str, pid: str) -> int:
+        """Seats clockwise from the nominee, 1..N; the nominee is N (they vote last)."""
+        seats = [p.pid for p in self.players]
+        k = (seats.index(pid) - seats.index(nominee_pid)) % len(seats)
+        return k or len(seats)
+
+    def _counts_as_yes(self, p: Player, c: dict) -> bool:
+        """A raised hand counts unless the player has no vote, or is a working Butler whose Master's hand is down."""
+        if not c["hands"].get(p.pid):
+            return False
+        if not p.alive and not p.ghost_vote:
+            return False
+        if self._working(p, "butler"):
+            master = self._with_chip("master")
+            return bool(master and c["hands"].get(master))
+        return True
+
+    def _sync_clock(self) -> None:
+        """Lock every seat the hand has passed; record the votes when it has passed them all.
+
+        The only place locks are written. Called before every view and every hand action, so screens
+        agree to within one poll without any server-side timer.
+        """
+        live = self._live_clock()
+        if not live:
+            return
+        i, c = live
+        n = self.nominations[i]
+        idx = self.hand_index(c)
+        if c["state"] != "paused":
+            c["state"] = "countdown" if idx < 0 else "running"
+        for p in self.players:
+            if c["locked"][p.pid] is None and self.seat_offset(n["nominee"], p.pid) <= idx:
+                c["locked"][p.pid] = self._counts_as_yes(p, c)
+        if all(v is not None for v in c["locked"].values()):
+            c["state"] = "done"
+            self.record_votes(i, [pid for pid, v in c["locked"].items() if v])
+
+    def _vote_hand(self, p: Player, up: bool) -> bool:
+        """Toggle p's hand on the live clock, if there is one. Returns False when no clock is live."""
+        self._sync_clock()
+        live = self._live_clock()
+        if not live:
+            return False
+        _, c = live
+        if c["locked"][p.pid] is not None:
+            raise GameError("The clock has passed you")
+        if not p.alive and not p.ghost_vote:
+            raise GameError("No vote left")
+        c["hands"][p.pid] = bool(up)
+        return True
+
+    def _clock_view(self) -> dict | None:
+        found = self._latest_clock()
+        if not found:
+            return None
+        i, c = found
+        n = self.nominations[i]
+        return {"nomination": i, "nominator": n["nominator"], "nominee": n["nominee"], "state": c["state"],
+                "go_at": c["go_at"], "seat_seconds": c["seat_seconds"], "paused_at": c["paused_at"],
+                "paused_total": c["paused_total"], "hands": [pid for pid, up in c["hands"].items() if up],
+                "locked": {pid: v for pid, v in c["locked"].items() if v is not None}}
 
     # --- day ---
 
@@ -795,6 +959,9 @@ class Game:
     def end_day(self) -> None:
         """Dusk: execute the unique top nominee at or above threshold, let the script react, then start the night."""
         self._require("day")
+        self._sync_clock()
+        if self._live_clock():
+            raise GameError("Finish or stop the clock first")
         if not self.executed_today:
             t = self.threshold()
             eligible = [n for n in self.nominations if n["votes"] is not None and n["votes"] >= t]
@@ -965,8 +1132,10 @@ class Game:
         Tonight's deaths stay hidden (seat still alive) until dawn is announced.
         """
         over = self.phase == "over"
+        self._sync_clock()
         return {
-            "version": self.version, "script": {"id": self.script.ID, "name": self.script.NAME},
+            "version": self.version, "server_time": self.clock(),
+            "script": {"id": self.script.ID, "name": self.script.NAME},
             "phase": self.phase, "night": self.night, "day": self.day,
             "counts": self.counts, "buzz": self.buzz,
             # from the public alive count, so a night kill does not show early
@@ -976,7 +1145,7 @@ class Game:
             "announcements": self.announcements,
             "nominations": [{"nominator": self.get(n["nominator"]).name, "nominee": self.get(n["nominee"]).name,
                              "votes": n["votes"]} for n in self.nominations],
-            "hands": [p.pid for p in self.players if p.hand],
+            "hands": [p.pid for p in self.players if p.hand], "clock": self._clock_view(),
             "winner": self.winner, "win_reason": self.win_reason,
         }
 

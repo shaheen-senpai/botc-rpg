@@ -150,3 +150,84 @@ def test_dead_cannot_raise_to_nominate():
     g.kill(p(g, "Dev").pid)
     with pytest.raises(GameError, match="Dead players cannot nominate"):
         g.raise_hand(p(g, "Dev").token, True)
+
+
+# --- the vote clock ---
+
+SEVEN = ["imp", "poisoner", "monk", "empath", "soldier", "butler", "mayor"]   # threshold 4
+
+
+def vote_game():
+    g = make(SEVEN)
+    t = [1000.0]
+    g.clock = lambda: t[0]
+    g.start_day()
+    g.nominate(p(g, "Chen").pid, p(g, "Ben").pid)
+    return g, t
+
+
+def test_clock_locks_seats_in_order_and_records():
+    g, t = vote_game()
+    for n in ("Chen", "Dev", "Ema"):
+        g.raise_hand(p(g, n).token, True)
+    g.start_clock(0, seat_seconds=3)
+    assert g.public_view()["clock"]["state"] == "countdown"
+    t[0] += 3 + 3 * 1   # go, then one seat
+    assert g.public_view()["clock"]["locked"] == {p(g, "Chen").pid: True}
+    t[0] += 3 * 6       # the rest, nominee last
+    v = g.public_view()
+    assert v["clock"]["state"] == "done" and v["nominations"][0]["votes"] == 3
+
+
+def test_toggle_after_lock_refused():
+    g, t = vote_game()
+    g.start_clock(0)
+    t[0] += 3 + 3
+    with pytest.raises(GameError, match="The clock has passed you"):
+        g.raise_hand(p(g, "Chen").token, True)
+
+
+def test_butler_locks_no_when_master_down():
+    g = make(SEVEN)
+    t = [1000.0]
+    g.clock = lambda: t[0]
+    g.resolve(step(g, "butler"), [p(g, "Asha").pid])   # night 1: Finn's Master is Asha
+    g.start_day()
+    g.nominate(p(g, "Chen").pid, p(g, "Ben").pid)
+    g.raise_hand(p(g, "Finn").token, True)             # Asha's hand stays down
+    g.start_clock(0)
+    t[0] += 3 + 3 * 7
+    assert g.public_view()["clock"]["locked"][p(g, "Finn").pid] is False
+
+
+def test_dead_without_ghost_vote_cannot_raise():
+    g, t = vote_game()
+    g.kill(p(g, "Dev").pid)
+    g.set_ghost_vote(p(g, "Dev").pid, False)
+    g.start_clock(0)
+    with pytest.raises(GameError, match="No vote left"):
+        g.raise_hand(p(g, "Dev").token, True)
+
+
+def test_pause_freezes_and_restart_clears_locks():
+    g, t = vote_game()
+    g.raise_hand(p(g, "Chen").token, True)
+    g.start_clock(0)
+    t[0] += 3 + 3
+    g.pause_clock()
+    t[0] += 100
+    assert g.public_view()["clock"]["locked"] == {p(g, "Chen").pid: True}
+    g.resume_clock()
+    g.restart_clock()
+    v = g.public_view()["clock"]
+    assert v["locked"] == {} and v["hands"] == [p(g, "Chen").pid]
+
+
+def test_undo_start_clock_clears_clock():
+    g, t = vote_game()
+    before = g.snapshot()
+    g.start_clock(0)
+    g.push_undo("Start the clock", before, seen=True)
+    t[0] += 3 + 3 * 7
+    g.undo()
+    assert g.public_view()["clock"] is None and all(x.ghost_vote for x in g.players)
