@@ -17,6 +17,11 @@ The terminal prints a QR code and two URLs:
 
 If phones cannot connect, allow incoming connections for Python in the laptop's firewall.
 
+**Remote play.** Players (and the Storyteller) can be anywhere: put the server behind a public URL (a tunnel
+or a small VPS) and share that link instead of the LAN one. Turn the night check off in the game settings
+(`set_night_check`) so nobody waits on tap challenges, or exempt the one remote player at an in-room game.
+Votes run on the server's clock, so every screen sees the same hand.
+
 ## Flow
 
 1. **Lobby**: players scan and enter their name. Drag each token onto the right seat until the circle
@@ -44,14 +49,16 @@ warns when phones already showed the result or when picks made on phones since w
 
 ## Files
 
-- `roles.py` character data, setup table and night order
-- `dealing.py` random setup
-- `info.py` truthful information for each night step
-- `game.py` game state and rules
+- `scripts/` one module per script: character data (night order, reminders, hints) and the rule hooks
+  `game.py` calls (`trouble_brewing.py`; `bad_moon_rising.py`)
+- `dealing.py` random setup for any script
+- `game.py` generic game state: seats, phases, night steps, reminders, threads, hands, the vote clock, undo
 - `server.py` FastAPI server
 - `static/` phone page, Storyteller page, theme and bundled fonts
-- `test_game.py` rule tests: `uv run --with pytest pytest -q`
-- `trouble-brewing-almanac.pdf` player almanac for the script, by Rithwik aka BlazeReceptor
+- `test_game.py` Trouble Brewing rules, `test_table.py` table features (reminders, night check, threads, hands,
+  the clock), `test_bmr.py` Bad Moon Rising rules, `test_scripts.py` script data, `test_server.py` HTTP routes.
+  Run them all with `uv run pytest -q`
+- `trouble-brewing-almanac.pdf`, `bad-moon-rising-almanac.pdf` player sheets for the scripts, by Rithwik aka BlazeReceptor
 - `static/fonts/OFL-*.txt` licences for the bundled Grenze Gotisch and Alegreya Sans fonts
 
 Game state is in memory: restarting the server ends the game.

@@ -1,0 +1,12 @@
+[project]
+name = "botc-rpg"
+version = "0.1.0"
+description = "A digital grimoire for Blood on the Clocktower: Trouble Brewing and Bad Moon Rising."
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn", "qrcode"]
+
+[dependency-groups]
+dev = ["pytest", "httpx"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
