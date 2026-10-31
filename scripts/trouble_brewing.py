@@ -353,8 +353,8 @@ def on_execution(game: Game, p: Player) -> None:
 
 def on_nomination(game: Game, nominator: Player, nominee: Player, options: dict) -> None:
     """The Virgin's first nomination executes a Townsfolk nominator (a Spy may register as one)."""
-    if nominee.character == "virgin" and not game.virgin_spent:
-        game.virgin_spent = True
+    if nominee.character == "virgin" and not nominee.used:
+        nominee.used = True
         townsfolk = game._type_of(nominator) == TOWNSFOLK or (nominator.character == "spy" and options.get("spy_as_townsfolk"))
         if townsfolk and not game.impaired(nominee):
             game._execute(nominator)
@@ -365,8 +365,8 @@ def day_ability(game: Game, p: Player, options: dict) -> None:
     t = game.get(options.get("target"))
     game._announce(f"{p.name} claims Slayer and shoots {t.name}.")
     hit = False
-    if p.alive and p.character == "slayer" and not game.slayer_spent:
-        game.slayer_spent = True
+    if p.alive and p.character == "slayer" and not p.used:
+        p.used = True
         is_demon = game._type_of(t) == DEMON or (t.character == "recluse" and options.get("recluse_as_demon"))
         hit = not game.impaired(p) and is_demon and t.alive
     if hit:

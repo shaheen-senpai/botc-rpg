@@ -51,6 +51,8 @@ class Player:
     prompt: dict | None = None
     phone: bool = False
     reminders: list[dict] = field(default_factory=list)
+    # a once-per-game ability (or a first-death save) has been spent
+    used: bool = False
 
 
 class Game:
@@ -78,8 +80,6 @@ class Game:
         self.red_herring: str | None = None
         self.bluffs: list[str] = []
         self.counts: dict[str, int] = {}
-        self.virgin_spent = False
-        self.slayer_spent = False
         self.executed_today: str | None = None
         self.night_deaths: list[str] = []
         # deaths the script wants the Storyteller to decide: [{"pid", "cause", "why"}]
@@ -99,7 +99,24 @@ class Game:
         self.inbox: list[dict] = []
         for p in self.players:
             p.character = p.believed = None
-            p.alive, p.ghost_vote, p.messages, p.prompt, p.reminders = True, True, [], None, []
+            p.alive, p.ghost_vote, p.messages, p.prompt, p.reminders, p.used = True, True, [], None, [], False
+
+    # --- abilities ---
+
+    ABILITY_LABELS = {"each_night": "Acts each night", "passive": "Passive", "none": ""}
+
+    def ability_state(self, p: Player) -> dict:
+        """{"uses": str, "used": bool, "label": str} for the token and the drawer."""
+        uses = self.C[p.character]["uses"] if p.character else "none"
+        label = self.ABILITY_LABELS.get(uses, "Used" if p.used else "Unused")
+        return {"uses": uses, "used": p.used, "label": label}
+
+    def _spent(self, character: str) -> bool:
+        return any(p.character == character and p.used for p in self.players)
+
+    # older clients and tests read these as fields
+    virgin_spent = property(lambda self: self._spent("virgin"))
+    slayer_spent = property(lambda self: self._spent("slayer"))
 
     # --- reminders ---
 
@@ -887,6 +904,7 @@ class Game:
         return {**self.public_view(), "me": {
             "pid": p.pid, "name": p.name, "alive": self._publicly_alive(p),
             "role": {"id": p.believed, **self.C[p.believed]} if started and p.believed else None,
+            "ability": self.ability_state(p) if started and p.believed else None,
             "messages": p.messages, "prompt": p.prompt,
             "notes": [{"text": n["text"], "label": n["label"]} for n in self.inbox if n["pid"] == p.pid],
         }}
@@ -911,10 +929,11 @@ class Game:
             **self.public_view(),
             "players": [{"pid": p.pid, "name": p.name, "character": p.character, "believed": p.believed,
                          "alive": p.alive, "ghost_vote": p.ghost_vote, "reminders": [r["text"] for r in p.reminders],
+                         "ability": self.ability_state(p),
                          "impaired": bool(p.character) and self.impaired(p)} for p in self.players],
             "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self._with_chip("poisoned"),
-            "protected": self._with_chip("protected"), "master": self._with_chip("master"), "virgin_spent": self.virgin_spent,
-            "slayer_spent": self.slayer_spent, "executed_today": self.executed_today,
+            "protected": self._with_chip("protected"), "master": self._with_chip("master"),
+            "virgin_spent": self._spent("virgin"), "slayer_spent": self._spent("slayer"), "executed_today": self.executed_today,
             "night_deaths": self.night_deaths, "pending_deaths": self.pending_deaths, "steps": steps,
             "nominations_full": self.nominations,
             "queued": {pid: texts for pid, texts in self.queued.items()}, "second_round_done": self.second_round_done,

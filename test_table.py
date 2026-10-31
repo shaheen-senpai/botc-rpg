@@ -36,3 +36,20 @@ def test_set_reminder_is_a_storyteller_action():
     assert g.has(p(g, "Ema"), "red herring")
     g.set_reminder(p(g, "Ema").pid, "red herring", False)
     assert not g.has(p(g, "Ema"), "red herring")
+
+
+# --- ability state ---
+
+def test_slayer_use_marks_player_used():
+    g = make(["imp", "poisoner", "slayer", "empath", "soldier"])
+    g.start_day()
+    g.day_ability(p(g, "Chen").pid, {"target": p(g, "Dev").pid, "recluse_as_demon": False})
+    assert p(g, "Chen").used
+    assert g.ability_state(p(g, "Chen")) == {"uses": "day", "used": True, "label": "Used"}
+    assert g.storyteller_view()["slayer_spent"] is True
+
+
+def test_ability_state_in_views():
+    g = make(["imp", "poisoner", "slayer", "empath", "soldier"])
+    assert g.storyteller_view()["players"][0]["ability"] == {"uses": "each_night", "used": False, "label": "Acts each night"}
+    assert g.player_view(p(g, "Chen").token)["me"]["ability"]["label"] == "Unused"
