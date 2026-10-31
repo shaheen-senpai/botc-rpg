@@ -45,6 +45,13 @@ Votes run on the server's clock, so every screen sees the same hand.
    (the Slayer's shot, the Gossip's statement) are one button each. *End the day* executes and starts the night.
 6. Win conditions are checked after every death. Players see all characters when the game ends.
 
+**On a phone** (or a laptop browser, which shows the same page in two columns) a player has four tabs: their
+character token (tap to reveal; it hides itself after 45 seconds), **Messages** (one thread with the Storyteller:
+night information and dawn slips arrive as the Storyteller's bubbles, questions go out as the player's, with
+*Sent* / *Seen*; night choices and the tap challenge sit inline), the **Square** (the circle, today's news,
+*Raise hand to nominate*, and the vote: the phone switches to it when a clock starts, buzzes and chimes at go,
+ticks each seat, and the big button raises or lowers the hand until the hand passes), and the **Almanac**.
+
 Click any token to open its drawer: status toggles (alive, poisoned, drunk, protected, ghost vote), the ability
 block, reminder chips, the night-check exemption, the message thread with that player, and a character change.
 
