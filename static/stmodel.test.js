@@ -1,7 +1,17 @@
 // Pure model tests for the grimoire page. Run: node --test static/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { phaseTitle, tokenMarks, seatPositions } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, lobbyModel } from "./stmodel.js";
+
+test("lobbyModel says when the table can be dealt", () => {
+  const four = {players: [1, 2, 3, 4].map(i => ({pid: `p${i}`, name: `P${i}`, phone: i < 4})), script: {name: "Trouble Brewing"}};
+  assert.deepEqual(lobbyModel(four), {canDeal: false, why: "Trouble Brewing needs 5 to 15 players; 4 seated.", seated: [
+    {pid: "p1", name: "P1", phone: true, seat: 1}, {pid: "p2", name: "P2", phone: true, seat: 2},
+    {pid: "p3", name: "P3", phone: true, seat: 3}, {pid: "p4", name: "P4", phone: false, seat: 4}]});
+  const six = {players: [1, 2, 3, 4, 5, 6].map(i => ({pid: `p${i}`, name: `P${i}`, phone: true})), script: {name: "Bad Moon Rising"}};
+  assert.equal(lobbyModel(six).canDeal, true);
+  assert.equal(lobbyModel(six).why, "6 seated.");
+});
 
 const C = {imp: {uses: "each_night"}, slayer: {uses: "day"}, assassin: {uses: "once_per_game"}, soldier: {uses: "passive"}};
 

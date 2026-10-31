@@ -1,11 +1,11 @@
 // The grimoire: polls /api/st, renders the top bar, the circle and the right column, posts actions.
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
-import { phaseTitle, tokenMarks, seatPositions, nextStepPid } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel } from "./stmodel.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
-let S = null, C = {}, lastVersion = -1, toastTimer = null;
+let S = null, C = {}, SCRIPTS = [], lastVersion = -1, toastTimer = null;
 let selected = null;          // pid whose drawer is open
 let openStep = null;          // night ledger card the Storyteller opened by hand
 let mode = "none";            // "none" | "nominator" | "nominee": clicking tokens picks a nomination
@@ -41,9 +41,11 @@ async function api(path, body) {
 
 async function act(action, body = {}, clearPrefix = null) {
   try {
+    const before = S?.script?.id;
     S = await api(`/api/st/${action}?key=${encodeURIComponent(KEY)}`, body);
     if (clearPrefix) Object.keys(dirty).filter(k => k.startsWith(clearPrefix)).forEach(k => delete dirty[k]);
     lastVersion = S.version;
+    if (S.script.id !== before) C = await api("/api/characters");
     render();
     return true;
   } catch (e) { toast(e.message); return false; }
@@ -233,7 +235,31 @@ function installDrag() {
 function column() {
   if (view === "drawer" && selected) return drawer();
   if (view === "messages") return messages();
+  if (S.phase === "lobby" && !S.players.length && !sessionStorage.getItem("tb_script_chosen")) return picker();
   return ({lobby, setup, night, day, over})[S.phase]() + tools() + logBlock();
+}
+
+const BLURB = {
+  tb: ["Beginner", "Clear information, one death a night, a Demon that dies when executed. The script every table starts on."],
+  bmr: ["Intermediate", "Deaths pile up at night, Minions kill too, and the Demon may not die when you think. For tables that know the game and do not fear dying."],
+};
+
+function picker() {
+  const cards = SCRIPTS.map(s => `<article class="script-card">
+      <h3 class="${s.id === "tb" ? "good-text" : "evil-text"}">${esc(s.name)}</h3>
+      <p class="note">${esc(BLURB[s.id]?.[0] ?? "")}</p>
+      <p>${esc(BLURB[s.id]?.[1] ?? "")}</p>
+      <p class="note">${s.counts.townsfolk} Townsfolk · ${s.counts.outsider} Outsiders · ${s.counts.minion} Minions · ${s.counts.demon} ${s.counts.demon === 1 ? "Demon" : "Demons"}</p>
+      <button class="btn" onclick="chooseScript('${esc(s.id)}')">Run ${esc(s.name)}</button></article>`).join("");
+  return `<h2>Which script tonight?</h2><p class="lede">Players join after this. You can change your mind until the first person takes a seat.</p>${cards}`;
+}
+
+async function chooseScript(id) {
+  if (await act("set_script", {script: id})) { sessionStorage.setItem("tb_script_chosen", "1"); render(); }
+}
+
+async function copyLink() {
+  try { await navigator.clipboard.writeText(S.join_url); toast("Link copied"); } catch { toast("Could not copy; select the link instead"); }
 }
 
 function opts(list, chosen, blank) {
@@ -303,15 +329,19 @@ function messages() {
 }
 
 function lobby() {
-  const n = S.players.length;
+  const m = lobbyModel(S);
+  const seated = m.seated.map(s => `<div class="row-line"><b>${s.seat}</b> ${esc(s.name)}${s.phone ? "" : ` <span class="tag">no phone</span>`}
+      <button class="btn quiet small dim" style="margin-left:auto" onclick="act('remove_player', {pid:${q(s.pid)}})">Remove</button></div>`).join("");
   return `<h2>Gather the players</h2>
-    <p class="lede">Everyone scans the code on the table, or opens ${esc(S.join_url)} on their phone. Then drag the tokens so the circle matches how you are actually sitting, clockwise.</p>
-    <div class="field"><span>Someone without a phone</span>
-      <div class="line"><input id="add-name" placeholder="Their name"><button class="btn quiet small" onclick="act('add_player', {name: val('add-name')}, 'add-')">Seat them</button></div>
-      <p class="note">You will read their character and night info to them yourself.</p></div>
-    <h3>Deal</h3>
-    <p class="note">${n < 5 ? `${esc(S.script.name)} needs at least 5 players. ${n} seated so far.` : `${n} players seated.`}</p>
-    <button class="btn" ${n >= 5 && n <= 15 ? "" : "disabled"} onclick="act('deal')">Deal characters</button>`;
+    <p class="lede">Scan the code at the table, or send the link. Then drag the tokens so the circle matches the real table, clockwise.</p>
+    <div class="linkbox"><span>${esc(S.join_url)}</span><button class="btn quiet small" onclick="copyLink()">Copy link</button></div>
+    <h3>Seated, clockwise</h3>
+    ${seated || `<p class="note">Nobody yet.</p>`}
+    <div class="line"><input id="add-name" placeholder="Someone without a phone" style="flex:1"><button class="btn quiet small" onclick="act('add_player', {name: val('add-name')}, 'add-')">Seat them</button></div>
+    <p class="note">You read their character and night info to them yourself.</p>
+    <div class="card-accent"><h3>Deal</h3>
+      <p class="note">${esc(m.why)} Night check is ${S.night_check ? "on; turn it off in settings for remote games" : "off: phones are not waited for"}.</p>
+      <button class="btn" ${m.canDeal ? "" : "disabled"} onclick="act('deal')">Deal characters</button></div>`;
 }
 
 function setup() {
@@ -432,7 +462,7 @@ const ui = {
   log(v) { logOpen = v; },
   deselect() { selected = null; view = "ledger"; },
 };
-Object.assign(window, {act, pick, closeDrawer, showMessages, changeScript, toggleVote, val, voteDraft, sound, render, ui});
+Object.assign(window, {act, pick, closeDrawer, showMessages, changeScript, chooseScript, copyLink, toggleVote, val, voteDraft, sound, render, ui});
 
 document.addEventListener("input", e => { if (e.target.id) dirty[e.target.id] = e.target.type === "checkbox" ? e.target.checked : e.target.value; });
 document.addEventListener("pointerdown", () => sound.unlock(), {once: true});
@@ -446,5 +476,6 @@ document.addEventListener("keydown", e => {
 addEventListener("resize", () => el("square") && fitNames(el("square")));
 
 installDrag();
+api("/api/scripts").then(s => { SCRIPTS = s; });
 api("/api/characters").then(c => { C = c; lastVersion = -1; poll(); });
 setInterval(poll, 1200);

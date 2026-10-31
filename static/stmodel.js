@@ -50,6 +50,16 @@ export function tokenMarks(p, v, C) {
   };
 }
 
+export function lobbyModel(v) {
+  const n = v.players.length;
+  const canDeal = n >= 5 && n <= 15;
+  return {
+    canDeal,
+    why: canDeal ? `${n} seated.` : `${v.script.name} needs 5 to 15 players; ${n} seated.`,
+    seated: v.players.map((p, i) => ({pid: p.pid, name: p.name, phone: !!p.phone, seat: i + 1})),
+  };
+}
+
 // seat centres around a ring, as CSS percentages; seat 1 at the top, clockwise
 export function seatPositions(n) {
   return Array.from({length: n}, (_, i) => {
