@@ -36,7 +36,7 @@ ST_ACTIONS = {
     "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
     "ask", "resolve", "second_round", "send", "finish_step", "message", "start_day", "nominate", "record_votes",
     "slayer_shot", "day_ability", "set_hand", "start_clock", "pause_clock", "resume_clock", "restart_clock", "stop_clock",
-    "end_day", "read_inbox", "read_thread", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
+    "end_day", "confirm_death", "read_inbox", "read_thread", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
     "declare_winner", "reset", "undo",
 }
 
@@ -47,7 +47,7 @@ ACTION_LABELS = {
     "set_reminder": "Change {name}'s reminders", "set_night_check": "Night check {body_on}",
     "set_exempt": "Night check for {name}", "stop_waiting": "Stop waiting for phones", "set_hand": "{name}'s hand",
     "start_clock": "Start the clock", "pause_clock": "Pause the clock", "resume_clock": "Resume the clock",
-    "restart_clock": "Restart the clock", "stop_clock": "Stop the clock",
+    "restart_clock": "Restart the clock", "stop_clock": "Stop the clock", "confirm_death": "Decide a death",
     "add_player": "Seat {body_name}", "remove_player": "Remove {name}", "move_player": "Move {name}",
     "deal": "Deal characters", "set_character": "Change {name}'s character", "set_setup": "Save red herring and bluffs",
     "start_game": "Start the game", "ask": "Ask again", "resolve": "Work out a night step", "second_round": "Second buzz",

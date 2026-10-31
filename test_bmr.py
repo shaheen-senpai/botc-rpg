@@ -64,3 +64,54 @@ def test_lunatic_believes_a_demon_not_in_play():
     g = make(["po", "assassin", "lunatic", "sailor", "tealady"])
     lun = p(g, "Chen")
     assert bmr.CHARACTERS[lun.believed]["type"] == "demon" and lun.believed != "po"
+
+
+# --- deaths and protection ---
+
+def test_sailor_cannot_die_and_fool_survives_once():
+    g = make(["po", "assassin", "sailor", "fool", "gossip", "tinker", "tealady"])   # Tea Lady sits by the Po: no shield
+    to_night(g)
+    g.resolve(step(g, "po"), [p(g, "Chen").pid])
+    assert p(g, "Chen").alive
+    g.kill(p(g, "Dev").pid)
+    assert p(g, "Dev").alive and p(g, "Dev").used
+    g.kill(p(g, "Dev").pid)
+    assert not p(g, "Dev").alive
+
+
+def test_tea_lady_protects_good_neighbours():
+    g = make(["po", "tealady", "gossip", "gambler", "sailor"])   # Ben's neighbours: Asha (evil), Chen (good)
+    to_night(g)
+    g.resolve(step(g, "po"), [p(g, "Chen").pid])
+    assert p(g, "Chen").alive is False   # one neighbour is evil: no protection
+    g2 = make(["gambler", "tealady", "gossip", "po", "sailor"])  # Ben's neighbours: Asha and Chen, both good
+    to_night(g2)
+    g2.resolve(step(g2, "po"), [p(g2, "Chen").pid])
+    assert p(g2, "Chen").alive
+
+
+def test_pacifist_execution_asks_then_confirm():
+    g = make(["po", "assassin", "pacifist", "sailor", "gossip"])
+    g.start_day()
+    g.nominate(p(g, "Asha").pid, p(g, "Ema").pid)
+    g.record_votes(0, [x.pid for x in g.players[:3]])
+    g.end_day()
+    assert g.phase == "day" and g.pending_deaths[0]["pid"] == p(g, "Ema").pid
+    g.confirm_death(0, False)
+    assert p(g, "Ema").alive
+    g.end_day()
+    assert g.phase == "night"
+
+
+def test_zombuul_registers_dead_then_acts_after_a_quiet_day():
+    g = make(["zombuul", "assassin", "sailor", "gossip", "gambler"])
+    g.start_day()
+    g.nominate(p(g, "Ben").pid, p(g, "Asha").pid)
+    g.record_votes(0, [x.pid for x in g.players[:3]])
+    g.end_day()                                   # Asha "dies" once: night 2
+    assert p(g, "Asha").alive and g.has(p(g, "Asha"), "registers dead")
+    assert g.public_view()["seats"][0]["alive"] is False and g.winner is None
+    assert g.step_applies(g.steps[step(g, "zombuul")]) is False   # someone died today: sleeps
+    g.start_day()
+    g.end_day()                                   # nobody dies on day 2: night 3
+    assert g.step_applies(g.steps[step(g, "zombuul")]) is True

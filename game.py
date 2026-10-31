@@ -94,6 +94,8 @@ class Game:
         self.counts: dict[str, int] = {}
         self.executed_today: str | None = None
         self.night_deaths: list[str] = []
+        # pids that died (or registered as dead) during the current day; some characters act only when it is empty
+        self.died_today: list[str] = []
         # deaths the script wants the Storyteller to decide: [{"pid", "cause", "why"}]
         self.pending_deaths: list[dict] = []
         self.steps: list[dict] = []
@@ -206,8 +208,8 @@ class Game:
         return sum(p.alive for p in self.players)
 
     def threshold(self) -> int:
-        """Votes needed to put a nominee up for execution: half the living, rounded up."""
-        return math.ceil(self.alive_count() / 2)
+        """Votes needed to put a nominee up for execution: half the living (as the table knows it), rounded up."""
+        return math.ceil(sum(self._publicly_alive(p) for p in self.players) / 2)
 
     def impaired(self, p: Player) -> bool:
         """True if the player's ability does not work: a Drunk-like character, or a poisoned / drunk chip."""
@@ -544,6 +546,7 @@ class Game:
                 continue
             choose = night["count"] if night["kind"] == "choose" else 0
             steps.append({"key": key, "kind": night["kind"], "pids": pids, "choose": choose,
+                          "variable": bool(night.get("variable")), "question": night.get("question", ""),
                           "allow_self": night.get("allow_self", True), "prompt": night.get("prompt", ""),
                           "choices": [], "answer": None, "suggestion": None, "sent": None, "done": False})
         return steps
@@ -579,7 +582,7 @@ class Game:
             **options: script-specific extras, e.g. the Imp's redirect / new_demon.
         """
         s = self._step(step)
-        if len(choices) != s["choose"]:
+        if len(choices) != s["choose"] and not (s["variable"] and len(choices) <= s["choose"]):
             raise GameError(f"Choose exactly {s['choose']} player(s)")
         targets = [self.get(c) for c in choices]
         actor = self.get(s["pids"][0])
@@ -829,7 +832,7 @@ class Game:
         """A raised hand counts unless the player has no vote, or is a working Butler whose Master's hand is down."""
         if not c["hands"].get(p.pid):
             return False
-        if not p.alive and not p.ghost_vote:
+        if not self._publicly_alive(p) and not p.ghost_vote:
             return False
         if self._working(p, "butler"):
             master = self._with_chip("master")
@@ -866,7 +869,7 @@ class Game:
         _, c = live
         if c["locked"][p.pid] is not None:
             raise GameError("The clock has passed you")
-        if not p.alive and not p.ghost_vote:
+        if not self._publicly_alive(p) and not p.ghost_vote:
             raise GameError("No vote left")
         c["hands"][p.pid] = bool(up)
         return True
@@ -890,6 +893,8 @@ class Game:
         The script first does whatever it sends automatically (e.g. an Undertaker step left open).
         """
         self._require("night")
+        if self.pending_deaths:
+            raise GameError("Decide the pending deaths first")
         self._require_phones_done("dawn")
         self.script.before_dawn(self)
         self._flush(filler="Nothing to report tonight.")
@@ -900,6 +905,7 @@ class Game:
         self.nominations = []
         self.announcements = []
         self.executed_today = None
+        self.died_today = []
         for p in self.players:
             p.prompt = None
         dead = [self.get(pid).name for pid in self.night_deaths]
@@ -917,7 +923,7 @@ class Game:
         if self.executed_today:
             raise GameError("There has already been an execution today")
         a, b = self.get(nominator), self.get(nominee)
-        if not a.alive or not b.alive:
+        if not self._publicly_alive(a) or not self._publicly_alive(b):
             raise GameError("Only living players nominate and can be nominated")
         if any(n["nominator"] == a.pid for n in self.nominations):
             raise GameError(f"{a.name} has already nominated today")
@@ -937,13 +943,13 @@ class Game:
         previous = set(n["voters"])
         for pid in voters:
             p = self.get(pid)
-            if not p.alive and not p.ghost_vote and pid not in previous:
+            if not self._publicly_alive(p) and not p.ghost_vote and pid not in previous:
                 raise GameError(f"{p.name} is dead and has used their vote")
         for pid in previous:
-            if not self.get(pid).alive:
+            if not self._publicly_alive(self.get(pid)):
                 self.get(pid).ghost_vote = True
         for pid in voters:
-            if not self.get(pid).alive:
+            if not self._publicly_alive(self.get(pid)):
                 self.get(pid).ghost_vote = False
         n["voters"], n["votes"] = list(voters), len(voters)
         self._announce(f"{len(voters)} vote(s) to execute {self.get(n['nominee']).name} "
@@ -976,6 +982,10 @@ class Game:
                     self._announce("Tied vote: nobody is executed.")
             else:
                 self._announce("Nobody is executed.")
+        if self.pending_deaths:
+            names = " and ".join(self.get(d["pid"]).name for d in self.pending_deaths)
+            self._announce(f"Decide whether {names} dies, then end the day.")
+            return
         self._lower_hands()
         if not self.winner:
             self.script.day_end(self)
@@ -1011,9 +1021,24 @@ class Game:
         p.alive = False
         if self.phase == "night":
             self.night_deaths.append(p.pid)
+        else:
+            self.died_today.append(p.pid)
         self._log(f"{p.name} ({self.cname(p.character)}) dies: {cause}")
         self.script.on_death(self, p, cause)
         self._check_win()
+
+    def confirm_death(self, index: int, dies: bool) -> None:
+        """Storyteller decides a death the script left to them (see pending_deaths)."""
+        if not 0 <= index < len(self.pending_deaths):
+            raise GameError("No such pending death")
+        d = self.pending_deaths.pop(index)
+        p = self.get(d["pid"])
+        if dies:
+            self._die(p, d["cause"], force=True)
+            if d["cause"] == "executed" and not p.alive:
+                self.script.on_execution(self, p)
+        else:
+            self._log(f"{p.name} survives ({d['cause']}): Storyteller's call")
 
     def _check_win(self) -> None:
         if self.winner:
@@ -1029,10 +1054,10 @@ class Game:
 
     # --- storyteller overrides ---
 
-    def kill(self, pid: str) -> None:
-        """Storyteller kills a player directly (win checks still apply)."""
+    def kill(self, pid: str, force: bool = False) -> None:
+        """Storyteller kills a player; the script's saves (Fool, Sailor...) apply unless force."""
         self._require("night", "day")
-        self._die(self.get(pid), "storyteller", force=True)
+        self._die(self.get(pid), "storyteller", force=force)
 
     def revive(self, pid: str) -> None:
         """Storyteller undoes a death."""
@@ -1152,7 +1177,10 @@ class Game:
         }
 
     def _publicly_alive(self, p: Player) -> bool:
-        """Alive as the table knows it: a player killed tonight still looks alive until dawn."""
+        """Alive as the table knows it: a player killed tonight still looks alive until dawn; a player
+        who "registers dead" (the Zombuul's first death) looks dead while alive."""
+        if self.has(p, "registers dead"):
+            return False
         return p.alive or (self.phase == "night" and p.pid in self.night_deaths)
 
     def player_view(self, token: str) -> dict:

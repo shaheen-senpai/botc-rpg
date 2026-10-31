@@ -10,6 +10,7 @@ import random
 from typing import TYPE_CHECKING
 
 from scripts import DEMON, MINION, OUTSIDER, SETUP_COUNTS, TOWNSFOLK, char_name as _char_name, ids_of, is_good
+from scripts.trouble_brewing import living_neighbours
 
 if TYPE_CHECKING:
     from game import Game, Player
@@ -215,21 +216,70 @@ def deal_extras(characters: dict[str, str], rng: random.Random) -> dict:
     return {"believed": believed, "red_herring": None, "bluffs": rng.sample(bluff_pool, 3)}
 
 
-# --- hooks (rules fill in over Tasks 10-13) ---
+# --- night ---
 
 def step_applies(game: Game, step: dict) -> bool | None:
+    if step["key"] == "zombuul" and game.died_today:
+        return False
     return None
 
 
 def apply(game: Game, step: dict, actor: Player, targets: list[Player], options: dict) -> None:
-    return None
+    """State effects of a choose step."""
+    key = step["key"]
+    if key in ("po", "shabaloth", "zombuul"):
+        if game.impaired(actor):
+            game._log(f"{cname(key)} attacks: no effect, the Demon is drunk or poisoned")
+            return
+        for t in targets:
+            game._die(t, "demon")
 
 
 def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -> str | None:
     return None
 
 
+# --- deaths ---
+
+NIGHT_KILLS = {"demon", "pukka", "assassin", "godfather", "gossip", "moonchild", "gambler", "tinker", "grandmother"}
+
+
+def _tea_lady_shields(game: Game, p: Player) -> bool:
+    """True if p sits beside a sober, living Tea Lady whose other living neighbour is also good."""
+    for t in game.players:
+        if game._working(t, "tealady"):
+            neighbours = living_neighbours(game, t)
+            if p in neighbours and all(game.is_good(n.character) for n in neighbours):
+                return True
+    return False
+
+
 def may_die(game: Game, p: Player, cause: str) -> bool | str:
+    """The script's saves: Sailor, Tea Lady, Fool, Innkeeper, Devil's Advocate, Zombuul; the Pacifist asks."""
+    if p.character == "sailor" and not game.impaired(p):
+        game._log(f"{p.name} cannot die: a sober Sailor")
+        return False
+    if _tea_lady_shields(game, p):
+        game._log(f"{p.name} cannot die: the Tea Lady's neighbour")
+        return False
+    if p.character == "fool" and not p.used and not game.impaired(p):
+        p.used = True
+        game._log(f"{p.name} does not die: the Fool's first death")
+        return False
+    if cause in NIGHT_KILLS and cause != "assassin" and game.has(p, "protected"):
+        game._log(f"{p.name} survives: protected by the Innkeeper")
+        return False
+    if cause == "executed" and game.has(p, "survives execution"):
+        game._log(f"{p.name} survives execution: the Devil's Advocate")
+        return False
+    if p.character == "zombuul" and not p.used:
+        p.used = True
+        game.mark(p, "registers dead")
+        game.died_today.append(p.pid)
+        game._log(f"{p.name} registers as dead: the Zombuul's first death")
+        return False
+    if cause == "executed" and game.is_good(p.character) and any(game._working(q, "pacifist") for q in game.players):
+        return "ask: the Pacifist is in play; does the executed good player die?"
     return True
 
 
