@@ -143,6 +143,17 @@ button, select, input, textarea { font: inherit; color: inherit; }
 }
 .token .glyph { width: calc(var(--size) * 0.4); height: calc(var(--size) * 0.4); margin: 0 auto calc(var(--size) * 0.02); }
 .token.lit { box-shadow: 0 0 0 3px var(--brass-bright), 0 0 22px 6px rgba(245, 188, 85, 0.55); }
+.token.selected { box-shadow: 0 0 0 3px var(--parchment), 0 0 0 6px var(--brass-bright); }
+.token.hand { box-shadow: 0 0 0 3px var(--felt-deep), 0 0 0 7px var(--brass-bright), 0 0 18px 4px rgba(245, 188, 85, 0.45); }
+.token.pickme { box-shadow: 0 0 0 3px var(--parchment), 0 0 0 5px var(--brass); }
+/* ability pip: filled = a once-per-game ability not yet used, hollow = used */
+.pip { position: absolute; right: -2px; bottom: -2px; width: 16px; height: 16px; border-radius: 50%; background: var(--brass-bright); border: 2px solid var(--felt-deep); box-sizing: border-box; }
+.pip.used { background: transparent; border-color: var(--brass-bright); }
+/* vote marks during a clock */
+.vote { position: absolute; top: -8px; right: -8px; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font: 700 15px var(--body); border: 2px solid var(--felt-deep); box-sizing: border-box; }
+.vote.yes { background: var(--brass-bright); color: var(--ink); }
+.vote.no { background: var(--ink-soft); color: var(--parchment); }
+.vote.up { background: var(--parchment); font-size: 17px; }
 
 .nameplate {
   display: inline-block;
@@ -173,6 +184,9 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .rem.master { background: var(--lapis); }
 .rem.herring { background: var(--oxblood); }
 .rem.vote { background: var(--parchment-dim); color: var(--ink); }
+.rem.info { background: var(--lapis); }
+.rem.death { background: var(--oxblood); }
+.rem.note { background: var(--brass-bright); color: var(--ink); }
 
 /* --- grimoire pages --- */
 .paper {
