@@ -34,7 +34,7 @@ STATIC = Path(__file__).parent / "static"
 ST_ACTIONS = {
     "set_script", "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
     "ask", "resolve", "second_round", "send", "finish_step", "message", "start_day", "nominate", "record_votes",
-    "slayer_shot", "day_ability", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_ghost_vote",
+    "slayer_shot", "day_ability", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
     "declare_winner", "reset", "undo",
 }
 
@@ -42,6 +42,7 @@ ST_ACTIONS = {
 # undo-button text per action; {name} is the player named by the body's pid
 ACTION_LABELS = {
     "set_script": "Choose the {body_script} script", "day_ability": "Use {name}'s ability",
+    "set_reminder": "Change {name}'s reminders",
     "add_player": "Seat {body_name}", "remove_player": "Remove {name}", "move_player": "Move {name}",
     "deal": "Deal characters", "set_character": "Change {name}'s character", "set_setup": "Save red herring and bluffs",
     "start_game": "Start the game", "ask": "Ask again", "resolve": "Work out a night step", "second_round": "Second buzz",

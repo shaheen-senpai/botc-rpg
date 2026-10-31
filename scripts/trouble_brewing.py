@@ -175,16 +175,25 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
     """Effects of a choose step: Poisoner poisons, Monk protects if working, Butler sets Master, Imp attacks."""
     key = step["key"]
     if key == "poisoner":
-        game.poisoned = targets[0].pid
+        _clear(game, "poisoned")
+        game.mark(targets[0], "poisoned", "night")
         game._log(f"Poisoner poisons {targets[0].name}")
     elif key == "monk":
-        game.protected = None if game.impaired(actor) else targets[0].pid
+        _clear(game, "protected")
+        if not game.impaired(actor):
+            game.mark(targets[0], "protected", "dawn")
         game._log(f"Monk protects {targets[0].name}{' (no effect: impaired)' if game.impaired(actor) else ''}")
     elif key == "butler":
-        game.master = targets[0].pid
+        _clear(game, "master")
+        game.mark(targets[0], "master", "night")
         game._log(f"Butler chooses {targets[0].name} as Master")
     elif key == "imp":
         _demon_attack(game, actor, targets[0], options.get("redirect"), options.get("new_demon"))
+
+
+def _clear(game: Game, text: str) -> None:
+    for p in game.players:
+        game.unmark(p, text)
 
 
 def _demon_attack(game: Game, imp: Player, target: Player, redirect: str | None, new_demon: str | None) -> None:
@@ -270,8 +279,7 @@ def grimoire_text(game: Game) -> str:
             marks.append(f"thinks {cname(p.believed)}")
         if not p.alive:
             marks.append("dead")
-        if game.poisoned == p.pid:
-            marks.append("poisoned")
+        marks += [r["text"] for r in p.reminders]
         if game.red_herring == p.pid:
             marks.append("Fortune Teller red herring")
         suffix = f" ({', '.join(marks)})" if marks else ""
@@ -318,7 +326,7 @@ def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -
 def may_die(game: Game, p: Player, cause: str) -> bool | str:
     """The Monk's charge and a working Soldier survive the Demon."""
     if cause == "demon":
-        if game.protected == p.pid:
+        if game.has(p, "protected"):
             game._log(f"Demon attacks {p.name}: saved by the Monk")
             return False
         if game._working(p, "soldier"):
@@ -330,7 +338,7 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
 def on_death(game: Game, p: Player, cause: str) -> None:
     """A dead Poisoner's poison ends; the Scarlet Woman may become the Imp."""
     if p.character == "poisoner":
-        game.poisoned = None
+        _clear(game, "poisoned")
     if game._type_of(p) == DEMON and not game._alive_demon() and game.alive_count() + 1 >= 5:
         sw = next((q for q in game.players if game._working(q, "scarlet_woman")), None)
         if sw:

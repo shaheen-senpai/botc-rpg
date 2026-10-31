@@ -37,6 +37,8 @@ class Player:
                       "options": list[str] (6 character ids incl. the targets), "answer": list[str] | None,
                       "step": None}
     phone is False for players the Storyteller seated by hand; they never get tap tasks.
+    reminders schema: list of {"text": str, "until": "night" | "dawn" | None} - chips under the token;
+    "night" ones clear when the next night starts, "dawn" ones at dawn, None stays until removed.
     """
     pid: str
     token: str
@@ -48,6 +50,7 @@ class Player:
     messages: list[dict] = field(default_factory=list)
     prompt: dict | None = None
     phone: bool = False
+    reminders: list[dict] = field(default_factory=list)
 
 
 class Game:
@@ -75,9 +78,6 @@ class Game:
         self.red_herring: str | None = None
         self.bluffs: list[str] = []
         self.counts: dict[str, int] = {}
-        self.poisoned: str | None = None
-        self.protected: str | None = None
-        self.master: str | None = None
         self.virgin_spent = False
         self.slayer_spent = False
         self.executed_today: str | None = None
@@ -99,7 +99,38 @@ class Game:
         self.inbox: list[dict] = []
         for p in self.players:
             p.character = p.believed = None
-            p.alive, p.ghost_vote, p.messages, p.prompt = True, True, [], None
+            p.alive, p.ghost_vote, p.messages, p.prompt, p.reminders = True, True, [], None, []
+
+    # --- reminders ---
+
+    def has(self, p: Player, text: str) -> bool:
+        """Whether p carries the reminder chip text (exact match)."""
+        return any(r["text"] == text for r in p.reminders)
+
+    def mark(self, p: Player, text: str, until: str | None = None) -> None:
+        """Put a reminder chip on p (no duplicates); until is "night", "dawn" or None (stays)."""
+        if not self.has(p, text):
+            p.reminders.append({"text": text, "until": until})
+
+    def unmark(self, p: Player, text: str) -> None:
+        """Remove the reminder chip text from p, if present."""
+        p.reminders = [r for r in p.reminders if r["text"] != text]
+
+    def _expire(self, until: str) -> None:
+        for p in self.players:
+            p.reminders = [r for r in p.reminders if r["until"] != until]
+
+    def _with_chip(self, text: str) -> str | None:
+        """pid of the first player carrying the chip, or None (compatibility views)."""
+        return next((p.pid for p in self.players if self.has(p, text)), None)
+
+    def set_reminder(self, pid: str, text: str, on: bool) -> None:
+        """Storyteller adds or removes a reminder chip; such chips stay until removed."""
+        p = self.get(pid)
+        if not text.strip():
+            raise GameError("Reminder text required")
+        (self.mark if on else self.unmark)(p, text.strip())
+        self._log(f"Storyteller {'adds' if on else 'removes'} {text.strip()!r} on {p.name}")
 
     # --- lookups ---
 
@@ -148,8 +179,9 @@ class Game:
         return math.ceil(self.alive_count() / 2)
 
     def impaired(self, p: Player) -> bool:
-        """True if the player's ability does not work: a Drunk-like character or currently poisoned."""
-        return p.character in self.script.IMPAIRED_CHARACTERS or self.poisoned == p.pid
+        """True if the player's ability does not work: a Drunk-like character, or a poisoned / drunk chip."""
+        return p.character in self.script.IMPAIRED_CHARACTERS or any(
+            r["text"].split()[0] in ("poisoned", "drunk") for r in p.reminders)
 
     def _working(self, p: Player, character: str) -> bool:
         """True if p is alive, truly holds character, and is not poisoned."""
@@ -347,7 +379,7 @@ class Game:
         self._require("setup", "day")
         self.phase = "night"
         self.night += 1
-        self.poisoned = self.protected = self.master = None
+        self._expire("night")
         self.night_deaths = []
         self.second_round_done = False
         for p in self.players:
@@ -599,6 +631,7 @@ class Game:
         self.script.before_dawn(self)
         self._flush(filler="Nothing to report tonight.")
         self.buzz += 1
+        self._expire("dawn")
         self.phase = "day"
         self.day += 1
         self.nominations = []
@@ -743,9 +776,12 @@ class Game:
         self._log(f"Storyteller revives {p.name}")
 
     def set_poisoned(self, pid: str | None) -> None:
-        """Storyteller sets or clears the poisoned player."""
+        """Storyteller sets or clears the poisoned player (older clients; see set_reminder)."""
         self._require("night", "day")
-        self.poisoned = pid and self.get(pid).pid
+        for p in self.players:
+            self.unmark(p, "poisoned")
+        if pid:
+            self.mark(self.get(pid), "poisoned")
         self._log(f"Storyteller sets poisoned: {self.get(pid).name if pid else 'nobody'}")
 
     def set_ghost_vote(self, pid: str, value: bool) -> None:
@@ -874,10 +910,10 @@ class Game:
         return {
             **self.public_view(),
             "players": [{"pid": p.pid, "name": p.name, "character": p.character, "believed": p.believed,
-                         "alive": p.alive, "ghost_vote": p.ghost_vote,
+                         "alive": p.alive, "ghost_vote": p.ghost_vote, "reminders": [r["text"] for r in p.reminders],
                          "impaired": bool(p.character) and self.impaired(p)} for p in self.players],
-            "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self.poisoned,
-            "protected": self.protected, "master": self.master, "virgin_spent": self.virgin_spent,
+            "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self._with_chip("poisoned"),
+            "protected": self._with_chip("protected"), "master": self._with_chip("master"), "virgin_spent": self.virgin_spent,
             "slayer_spent": self.slayer_spent, "executed_today": self.executed_today,
             "night_deaths": self.night_deaths, "pending_deaths": self.pending_deaths, "steps": steps,
             "nominations_full": self.nominations,
