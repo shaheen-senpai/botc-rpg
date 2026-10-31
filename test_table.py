@@ -262,3 +262,15 @@ def test_undo_start_clock_refunds_a_spent_ghost_vote():
     assert p(g, "Dev").ghost_vote is False    # the auto-record spent it
     g.undo()
     assert g.public_view()["clock"] is None and p(g, "Dev").ghost_vote is True
+
+
+def test_clock_progress_bumps_the_version_for_polling_pages():
+    g, t = vote_game()
+    g.start_clock(0)
+    v0 = g.public_view()["version"]
+    assert g.public_view()["version"] == v0        # nothing moved
+    t[0] += 3 + 3
+    assert g.public_view()["version"] > v0         # a seat locked
+    v1 = g.public_view()["version"]
+    t[0] += 3 * 6
+    assert g.public_view()["version"] > v1         # finished and recorded

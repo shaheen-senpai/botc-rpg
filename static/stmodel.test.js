@@ -1,7 +1,46 @@
 // Pure model tests for the grimoire page. Run: node --test static/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel, nightCards } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel, nightCards, dayModel } from "./stmodel.js";
+
+const DC = {slayer: {name: "Slayer", uses: "day"}, butler: {name: "Butler", uses: "each_night"}, imp: {name: "Imp", uses: "each_night"},
+  empath: {name: "Empath", uses: "each_night"}, gossip: {name: "Gossip", uses: "day"}};
+const dv = (extra = {}) => ({
+  phase: "day", day: 2, threshold: 3, announcements: ["Dawn. Nobody died in the night."], hands: ["p4"],
+  players: [{pid: "p1", name: "Asha", character: "slayer", alive: true, ghost_vote: true, reminders: [], ability: {uses: "day", used: false}},
+            {pid: "p2", name: "Ben", character: "imp", alive: true, ghost_vote: true, reminders: [], ability: {uses: "each_night", used: false}},
+            {pid: "p3", name: "Chen", character: "butler", alive: true, ghost_vote: true, reminders: [], ability: {uses: "each_night", used: false}},
+            {pid: "p4", name: "Dev", character: "empath", alive: false, ghost_vote: true, reminders: ["vote left"], ability: {uses: "each_night", used: false}}],
+  nominations_full: [{nominator: "p1", nominee: "p2", voters: [], votes: null, clock: {state: "running", go_at: 0, seat_seconds: 3, paused_at: null, paused_total: 0, hands: {p3: true}, locked: {p3: null, p1: null, p2: null, p4: true}}}],
+  clock: {nomination: 0, nominator: "p1", nominee: "p2", state: "running", go_at: 0, seat_seconds: 3, paused_at: null, paused_total: 0, hands: ["p3", "p4"], locked: {p4: true}},
+  pending_deaths: [], ...extra});
+
+test("dayModel builds the butler warning when the master's hand is down", () => {
+  const v = dv();
+  v.players[0].reminders = ["master"];   // Asha is Chen's Master, and her hand is down
+  const m = dayModel(v, DC);
+  assert.equal(m.nominations[0].state, "running");
+  assert.equal(m.nominations[0].tally, 1);
+  assert.match(m.nominations[0].butlerWarn, /Chen is the Butler and Asha's hand is down/);
+  assert.deepEqual(m.nominations[0].locked, [{name: "Dev", yes: true}]);
+  assert.deepEqual(m.nominations[0].pending.map(x => [x.name, x.up]), [["Chen", true], ["Asha", false], ["Ben", false]]);
+});
+
+test("dayModel marks a nomination recorded after votes and lists hands to nominate", () => {
+  const v = dv({clock: null, nominations_full: [{nominator: "p1", nominee: "p2", voters: ["p3", "p4"], votes: 2, clock: {state: "done", hands: {}, locked: {p3: true, p4: true, p1: false, p2: false}}}]});
+  const m = dayModel(v, DC);
+  assert.equal(m.nominations[0].state, "recorded");
+  assert.equal(m.nominations[0].votes, 2);
+  assert.deepEqual(m.hands, [{pid: "p4", name: "Dev"}]);
+  assert.equal(m.dusk.text, "Nobody has reached 3 votes yet. Ending the day with no execution starts the night.");
+});
+
+test("dayModel lists the Slayer once and not after use", () => {
+  const v = dv({clock: null, nominations_full: []});
+  assert.deepEqual(dayModel(v, DC).abilities, [{pid: "p1", name: "Asha", label: "Slayer, shot unused", kind: "shoot"}]);
+  v.players[0].ability.used = true;
+  assert.deepEqual(dayModel(v, DC).abilities, []);
+});
 
 const NC = {
   sailor: {name: "Sailor", uses: "each_night", hint: "h1"}, gossip: {name: "Gossip", uses: "day", hint: "h2"},

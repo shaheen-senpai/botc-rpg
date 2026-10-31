@@ -1,7 +1,7 @@
 // The grimoire: polls /api/st, renders the top bar, the circle and the right column, posts actions.
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
-import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel } from "./stmodel.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
@@ -491,28 +491,53 @@ function toggleVote(i, pid) {
   render();
 }
 
-// Task 5 replaces this with the day ledger; until then: nominations and votes by chips
-function day() {
-  const noms = S.nominations_full.map((n, i) => {
-    voteDraft[i] ??= new Set(n.voters);
-    const eligible = S.players.filter(p => p.alive || p.ghost_vote || n.voters.includes(p.pid));
-    const enough = n.votes !== null && n.votes >= S.threshold;
-    return `<div class="nom"><div class="line"><span class="tally ${enough ? "enough" : ""}">${esc(pname(n.nominator))} nominates ${esc(pname(n.nominee))}</span>
-        ${n.votes !== null ? `<span class="note">${n.votes} ${n.votes === 1 ? "vote" : "votes"}${enough ? ", enough to execute" : ""}</span>` : ""}</div>
+// --- the day ledger ---
+
+function nominationCard(n) {
+  const i = n.i;
+  const chip = x => `<span class="chip ${x.yes || x.up ? "yes" : ""} ${x.ghost ? "ghost" : ""}">${esc(x.name)}</span>`;
+  let controls = "";
+  if (n.state === "idle") controls = `<button class="btn small" onclick="act('start_clock', {nomination:${i}, seat_seconds: ${seatSeconds()}})">Start the clock</button>`;
+  else if (n.state === "countdown" || n.state === "running") controls = `<button class="btn small" onclick="act('pause_clock')">Pause</button><button class="btn quiet small" onclick="act('restart_clock')">Restart</button><button class="btn quiet small" onclick="act('stop_clock')">Stop</button>`;
+  else if (n.state === "paused") controls = `<button class="btn small" onclick="act('resume_clock')">Resume</button><button class="btn quiet small" onclick="act('restart_clock')">Restart</button><button class="btn quiet small" onclick="act('stop_clock')">Stop</button>`;
+  const pill = {idle: ["Not started", "calm"], countdown: ["Starting", ""], running: ["Clock running", "wait"], paused: ["Paused", "calm"], done: ["Finished", "calm"], recorded: [`${n.votes} ${n.votes === 1 ? "vote" : "votes"}${n.votes >= n.threshold ? ", enough" : ""}`, n.votes >= n.threshold ? "wait" : "calm"]}[n.state];
+  const live = ["countdown", "running", "paused"].includes(n.state);
+  const nom = S.nominations_full[i];
+  voteDraft[i] ??= new Set(nom.voters);
+  const eligible = S.players.filter(p => p.alive || p.ghost_vote || nom.voters.includes(p.pid));
+  const rerecord = n.state === "recorded" || n.state === "idle" ? `<details class="tools small"><summary>${n.state === "recorded" ? "Re-record by hand" : "Record by hand instead"}</summary>
       <div class="chips">${eligible.map(p => `<button class="chip ${p.alive ? "" : "ghost"}" aria-pressed="${voteDraft[i].has(p.pid)}" onclick="toggleVote(${i}, '${p.pid}')">${esc(p.name)}</button>`).join("")}</div>
-      <button class="btn quiet small" onclick="act('record_votes', {nomination:${i}, voters:[...voteDraft[${i}]]}).then(() => delete voteDraft[${i}])">Record ${voteDraft[i].size} ${voteDraft[i].size === 1 ? "vote" : "votes"}</button></div>`;
-  }).join("");
+      <button class="btn quiet small" onclick="act('record_votes', {nomination:${i}, voters:[...voteDraft[${i}]]}).then(() => delete voteDraft[${i}])">Record ${voteDraft[i].size} ${voteDraft[i].size === 1 ? "vote" : "votes"}</button></details>` : "";
+  return `<div class="card-soft ${live ? "live" : ""}">
+    <div class="line" style="justify-content:space-between;margin:0"><span class="disp">${esc(n.text)}</span><span class="pill ${pill[1]}">${esc(pill[0])}</span></div>
+    ${live || n.state === "done" ? `<p class="note">Locked as the hand passes: ${n.locked.map(chip).join("") || "nobody yet"}</p>
+      <p class="note">Still to pass: ${n.pending.map(chip).join("") || "nobody"}</p>` : ""}
+    ${n.butlerWarn ? `<p class="note red">${esc(n.butlerWarn)}</p>` : ""}
+    ${live || n.state === "done" ? `<p><b>${n.tally}</b> so far · ${n.threshold} to execute</p>` : ""}
+    <div class="line">${controls}${live ? `<span class="note inline" style="margin-left:auto">${seatSeconds()} s a seat · click a token to raise its hand</span>` : ""}</div>
+    ${rerecord}</div>`;
+}
+
+function day() {
+  const m = dayModel(S, C);
+  const hands = m.hands.length ? m.hands.map(h => `<div class="row-line"><span><b>${esc(h.name)}</b> <span class="note inline">wants to nominate</span></span>
+      <span style="margin-left:auto;display:flex;gap:.4rem"><button class="btn small" onclick="ui.nominateFrom(${q(h.pid)})">Nominate…</button><button class="btn quiet small" onclick="act('set_hand', {pid:${q(h.pid)}, up:false})">Lower</button></span></div>`).join("")
+    : `<p class="note">Nobody has a hand up.</p>`;
+  const nominate = mode !== "none"
+    ? `<p class="note hint">${mode === "nominator" ? "Click the player who nominates." : `Now click the player ${esc(pname(pendingNominator))} nominates.`} <button class="btn quiet small" onclick="ui.cancelPick()">Cancel</button></p>`
+    : `<div class="line"><button class="btn quiet small" onclick="ui.nominateFrom(null)">Nominate by clicking tokens</button><label class="note inline"><input type="checkbox" id="nom-spy"> A Spy nominating the Virgin registers as Townsfolk</label></div>`;
+  const abilities = m.abilities.length ? m.abilities.map(a => `<div class="row-line"><span><b>${esc(a.label.split(",")[0])}</b> <span class="note inline">· ${esc(a.name)}${a.label.includes(",") ? "," + esc(a.label.split(",").slice(1).join(",")) : ""}</span></span>
+      <button class="btn quiet small" style="margin-left:auto" onclick="ui.openDrawer(${q(a.pid)})">${a.kind === "shoot" ? "Shoot…" : a.kind === "gossip" ? "True / false" : "Choose…"}</button></div>`).join("") : `<p class="note">Nothing to use today.</p>`;
+  const pending = m.dusk.pending.map(d => `<div class="line"><span><b>${esc(d.name)}</b> <span class="note inline">${esc(d.why)}</span></span>
+      <button class="btn small" onclick="act('confirm_death', {index:${d.index}, dies:true})">Dies</button><button class="btn quiet small" onclick="act('confirm_death', {index:${d.index}, dies:false})">Survives</button></div>`).join("");
   return `<h2>Day ${S.day}</h2>
-    <p class="lede">${S.threshold} votes execute.</p>
-    <ul class="crier">${S.announcements.map(a => `<li>${esc(a)}</li>`).join("")}</ul>
-    <h3>Nominations</h3>
-    <div class="line"><select id="nom-a" aria-label="Nominator">${playerOpts(p => p.alive, "", "Who nominates")}</select>
-      <select id="nom-b" aria-label="Nominee">${playerOpts(p => p.alive, "", "Who is nominated")}</select></div>
-    <label class="line note"><input type="checkbox" id="nom-spy"> A Spy nominating the Virgin registers as Townsfolk</label>
-    <button class="btn small" onclick="act('nominate', {nominator: val('nom-a'), nominee: val('nom-b'), spy_as_townsfolk: val('nom-spy')}, 'nom-')">Nominate</button>
-    ${noms}
-    <h3>Dusk</h3>
-    <button class="btn" onclick="Object.keys(voteDraft).forEach(k => delete voteDraft[k]); act('end_day')">End the day</button>`;
+    <ul class="crier">${m.announcements.map(a => `<li>${esc(a)}</li>`).join("")}</ul>
+    <h3>Hands up</h3>${hands}${nominate}
+    <h3>Nominations</h3>${m.nominations.map(nominationCard).join("") || `<p class="note">No nomination yet.</p>`}
+    <h3>Abilities today</h3>${abilities}
+    <div class="card-accent"><h3>Dusk</h3>${m.dusk.mastermind ? `<p class="note red">The Mastermind's extra day: an execution now ends the game for the executed player's team.</p>` : ""}
+      <p class="note">${esc(m.dusk.text)}</p>${pending}
+      <button class="btn ${m.dusk.text.startsWith("Nobody") ? "quiet" : ""}" ${m.dusk.canEnd ? "" : "disabled"} onclick="Object.keys(voteDraft).forEach(k => delete voteDraft[k]); act('end_day')">End the day</button></div>`;
 }
 
 function over() {
@@ -539,6 +564,9 @@ function logBlock() {
 // inline handlers in the templates reach module state through these
 const ui = {
   open(i, rerender = true) { openStep = i; if (rerender) render(); },
+  nominateFrom(pid) { pendingNominator = pid; mode = pid ? "nominee" : "nominator"; selected = null; view = "ledger"; render(); },
+  cancelPick() { mode = "none"; pendingNominator = null; render(); },
+  openDrawer(pid) { selected = pid; view = "drawer"; abilityTarget = null; render(); },
   target(pid) { abilityTarget = pid; render(); },
   picker(on) { reminderPicker = on; render(); },
   tools(v) { toolsOpen = v; },

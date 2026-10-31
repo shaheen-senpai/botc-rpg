@@ -887,6 +887,7 @@ class Game:
         i, c = live
         n = self.nominations[i]
         idx = self.hand_index(c)
+        before = (c["state"], dict(c["locked"]))
         if c["state"] != "paused":
             c["state"] = "countdown" if idx < 0 else "running"
         for p in self.players:
@@ -895,6 +896,8 @@ class Game:
         if all(v is not None for v in c["locked"].values()):
             c["state"] = "done"
             self.record_votes(i, [pid for pid, v in c["locked"].items() if v])
+        if (c["state"], c["locked"]) != before:
+            self.version += 1   # time moved the clock on: polling pages must redraw even without a POST
 
     def _vote_hand(self, p: Player, up: bool) -> bool:
         """Toggle p's hand on the live clock, if there is one. Returns False when no clock is live."""

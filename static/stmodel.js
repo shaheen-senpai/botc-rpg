@@ -165,6 +165,54 @@ export function nightCards(v, C, openStep) {
   return {cards, notTonight, phones, secondRound, dawn, openIdx};
 }
 
+// the day ledger: hands, nominations with their clock, abilities usable today, dusk
+export function dayModel(v, C) {
+  const byPid = Object.fromEntries(v.players.map(p => [p.pid, p]));
+  const name = pid => byPid[pid]?.name ?? "";
+  const seats = v.players.map(p => p.pid);
+  const live = v.clock && v.clock.state !== "done" ? v.clock : null;
+  const nominations = (v.nominations_full || []).map((n, i) => {
+    const c = n.clock;
+    const recorded = n.votes !== null;
+    const state = recorded ? "recorded" : c ? c.state : "idle";
+    const start = seats.indexOf(n.nominee);
+    const order = seats.map((_, k) => seats[(start + 1 + k) % seats.length]);   // clockwise from the nominee, nominee last
+    const locked = c ? order.filter(pid => c.locked[pid] !== null && c.locked[pid] !== undefined).map(pid => ({name: name(pid), yes: !!c.locked[pid]})) : [];
+    const pending = c ? order.filter(pid => c.locked[pid] === null || c.locked[pid] === undefined).map(pid => ({name: name(pid), up: !!c.hands[pid], ghost: !byPid[pid].alive})) : [];
+    let butlerWarn = null;
+    if (c && c.state !== "done") {
+      for (const p of v.players) {
+        if (p.character === "butler" && p.alive && c.hands[p.pid] && (c.locked[p.pid] === null || c.locked[p.pid] === undefined)) {
+          const master = v.players.find(x => x.reminders.includes("master"));
+          if (master && !c.hands[master.pid]) butlerWarn = `${p.name} is the Butler and ${master.name}'s hand is down: ${p.name}'s hand will not count unless ${master.name} raises hers first.`;
+        }
+      }
+    }
+    const tally = recorded ? n.votes : locked.filter(x => x.yes).length;
+    return {i, text: `${name(n.nominator)} nominates ${name(n.nominee)}`, state, tally, threshold: v.threshold, locked, pending, butlerWarn, votes: n.votes};
+  });
+  const abilities = v.players.filter(p => p.ability?.uses === "day" && !p.ability.used && p.alive).map(p => ({
+    pid: p.pid, name: p.name,
+    label: p.character === "slayer" ? "Slayer, shot unused" : `${C[p.character]?.name ?? p.character}, today`,
+    kind: p.character === "slayer" ? "shoot" : p.character === "gossip" ? "gossip" : "none",
+  }));
+  const picked = (v.announcements || []).some(a => a.includes("the Moonchild, chooses"));
+  for (const p of v.players) if (p.character === "moonchild" && !p.alive && !picked) abilities.push({pid: p.pid, name: p.name, label: "Moonchild, chooses a player", kind: "moonchild"});
+  const recorded = nominations.filter(n => n.state === "recorded" && n.votes >= v.threshold);
+  const top = recorded.length ? Math.max(...recorded.map(n => n.votes)) : 0;
+  const leaders = recorded.filter(n => n.votes === top);
+  let text = `Nobody has reached ${v.threshold} votes yet. Ending the day with no execution starts the night.`;
+  if (leaders.length === 1) text = `${name((v.nominations_full[leaders[0].i]).nominee)} is set to be executed with ${top} votes.`;
+  else if (leaders.length > 1) text = `Tied at ${top} votes: nobody is executed.`;
+  const pending = (v.pending_deaths || []).map((d, index) => ({index, name: name(d.pid), why: d.why}));
+  return {
+    announcements: v.announcements || [],
+    hands: (v.hands || []).map(pid => ({pid, name: name(pid)})),
+    nominations, abilities,
+    dusk: {text, pending, mastermind: (v.announcements || []).some(a => a.includes("one more day")), canEnd: !live && !pending.length},
+  };
+}
+
 export function lobbyModel(v) {
   const n = v.players.length;
   const canDeal = n >= 5 && n <= 15;
