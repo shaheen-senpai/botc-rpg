@@ -50,6 +50,55 @@ export function tokenMarks(p, v, C) {
   };
 }
 
+const GLOBAL_REMINDERS = ["poisoned", "drunk", "protected", "dead vote"];
+const KIND = {townsfolk: "Townsfolk", outsider: "Outsider", minion: "Minion", demon: "Demon"};
+
+// what the token drawer shows for one player
+export function drawerModel(p, v, C) {
+  const c = C[p.character];
+  const seat = v.players.findIndex(x => x.pid === p.pid) + 1;
+  const team = c && ["minion", "demon"].includes(c.type) ? "evil" : "good";
+  const inGame = v.phase === "night" || v.phase === "day";
+  const status = [];
+  if (inGame) {
+    status.push({key: "alive", label: "Alive", on: p.alive, action: p.alive ? {name: "kill", body: {pid: p.pid}} : {name: "revive", body: {pid: p.pid}}});
+    for (const text of ["poisoned", "drunk", "protected"]) {
+      const on = p.reminders.includes(text);
+      status.push({key: text, label: text[0].toUpperCase() + text.slice(1), on, action: {name: "set_reminder", body: {pid: p.pid, text, on: !on}}});
+    }
+    if (!p.alive) status.push({key: "ghost", label: "Ghost vote", on: p.ghost_vote, action: {name: "set_ghost_vote", body: {pid: p.pid, value: !p.ghost_vote}}});
+  }
+  const uses = p.ability?.uses ?? c?.uses ?? "none";
+  const used = !!p.ability?.used;
+  let kind = "none", title = c ? `${c.name}'s ability` : "", state = "", note = "";
+  if (uses === "each_night") { state = "Acts each night"; note = "See the night ledger."; }
+  else if (uses === "passive") { state = "Passive"; note = "The rules apply it; nothing to press."; }
+  else if (uses === "none") { title = ""; }
+  else { state = used ? "Used" : "Unused"; }
+  if (p.character === "slayer") { title = "Slayer's shot"; if (!used && p.alive && v.phase === "day") kind = "shoot"; }
+  if (p.character === "virgin") { title = "Virgin's nomination"; note = "Fires on their first nomination."; }
+  if (p.character === "gossip" && v.phase === "day" && p.alive) { title = "Gossip's statement"; kind = "gossip"; state = "Today"; }
+  if (p.character === "moonchild") {
+    title = "Moonchild's choice";
+    const picked = (v.announcements || []).some(a => a.includes("the Moonchild, chooses"));
+    if (!p.alive && !picked && v.phase === "day") kind = "moonchild";
+    state = picked ? "Chosen" : p.alive ? "Alive" : "Waiting for their pick";
+  }
+  const own = (c?.reminders ?? []).filter(t => !p.reminders.includes(t));
+  const options = [...own, ...GLOBAL_REMINDERS.filter(t => !own.includes(t) && !p.reminders.includes(t))];
+  const thread = v.threads?.[p.pid] ?? [];
+  return {
+    name: p.name, seat,
+    role: c ? {id: p.character, name: c.name, kind: KIND[c.type], team, ability: c.ability} : null,
+    thinks: p.believed && p.believed !== p.character ? C[p.believed]?.name ?? p.believed : null,
+    status, ability: {title, state, kind, note},
+    reminders: p.reminders.map(text => ({text, cls: chipClass(text)})), options,
+    exempt: !!p.exempt, showExempt: !!v.night_check && !!p.phone,
+    thread, unread: thread.filter(m => m.from === "player" && !m.seen).length,
+    changeCharacter: Object.entries(C).map(([id, x]) => ({id, name: x.name})),
+  };
+}
+
 export function lobbyModel(v) {
   const n = v.players.length;
   const canDeal = n >= 5 && n <= 15;

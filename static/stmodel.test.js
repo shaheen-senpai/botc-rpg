@@ -1,7 +1,55 @@
 // Pure model tests for the grimoire page. Run: node --test static/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { phaseTitle, tokenMarks, seatPositions, lobbyModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel } from "./stmodel.js";
+
+const CH = {
+  slayer: {name: "Slayer", type: "townsfolk", ability: "Shoot once.", uses: "day", reminders: ["no ability"]},
+  butler: {name: "Butler", type: "outsider", ability: "Pick a master.", uses: "each_night", reminders: ["master"]},
+  gossip: {name: "Gossip", type: "townsfolk", ability: "Say a thing.", uses: "day", reminders: ["dead"]},
+  moonchild: {name: "Moonchild", type: "outsider", ability: "Pick when dead.", uses: "on_death", reminders: ["dead"]},
+  imp: {name: "Imp", type: "demon", ability: "Kill.", uses: "each_night", reminders: ["dead"]},
+};
+const dayView = (players, extra = {}) => ({phase: "day", night_check: true, players, threads: {}, announcements: [], ...extra});
+const pl = (pid, character, extra = {}) => ({pid, name: pid.toUpperCase(), character, believed: character, alive: true, ghost_vote: true,
+  reminders: [], ability: {uses: CH[character].uses, used: false}, exempt: false, phone: true, ...extra});
+
+test("drawerModel: an unused Slayer by day offers the shot", () => {
+  const v = dayView([pl("p1", "slayer"), pl("p2", "imp")]);
+  const d = drawerModel(v.players[0], v, CH);
+  assert.equal(d.seat, 1);
+  assert.equal(d.role.name, "Slayer");
+  assert.deepEqual(d.ability, {title: "Slayer's shot", state: "Unused", kind: "shoot", note: ""});
+  assert.equal(d.status.find(s => s.key === "alive").on, true);
+  const used = drawerModel({...v.players[0], ability: {uses: "day", used: true}}, v, CH);
+  assert.equal(used.ability.kind, "none");
+  assert.equal(used.ability.state, "Used");
+});
+
+test("drawerModel: a dead Butler gets the ghost vote toggle, a living one does not", () => {
+  const v = dayView([pl("p1", "butler", {alive: false, ghost_vote: true}), pl("p2", "imp")]);
+  const d = drawerModel(v.players[0], v, CH);
+  assert.ok(d.status.some(s => s.key === "ghost" && s.on === true));
+  assert.ok(!drawerModel(v.players[1], v, CH).status.some(s => s.key === "ghost"));
+});
+
+test("drawerModel: reminder options are the character's then the globals, minus chips already on", () => {
+  const v = dayView([pl("p1", "butler", {reminders: ["master", "poisoned"]}), pl("p2", "imp")]);
+  const d = drawerModel(v.players[0], v, CH);
+  assert.deepEqual(d.reminders, [{text: "master", cls: "info"}, {text: "poisoned", cls: "poison"}]);
+  assert.deepEqual(d.options, ["drunk", "protected", "dead vote"]);
+});
+
+test("drawerModel: gossip and dead moonchild expose their day actions; thread is passed through oldest first", () => {
+  const thread = [{id: 1, from: "st", text: "a", label: "Night 1", seen: false}, {id: 2, from: "player", text: "b", label: "Day 1", seen: false}];
+  const v = dayView([pl("p1", "gossip"), pl("p2", "moonchild", {alive: false}), pl("p3", "imp")], {threads: {p1: thread}});
+  assert.equal(drawerModel(v.players[0], v, CH).ability.kind, "gossip");
+  assert.equal(drawerModel(v.players[1], v, CH).ability.kind, "moonchild");
+  const picked = {...v, announcements: ["P2, the Moonchild, chooses P3."]};
+  assert.equal(drawerModel(v.players[1], picked, CH).ability.kind, "none");
+  assert.deepEqual(drawerModel(v.players[0], v, CH).thread.map(m => m.text), ["a", "b"]);
+  assert.equal(drawerModel(v.players[0], v, CH).unread, 1);
+});
 
 test("lobbyModel says when the table can be dealt", () => {
   const four = {players: [1, 2, 3, 4].map(i => ({pid: `p${i}`, name: `P${i}`, phone: i < 4})), script: {name: "Trouble Brewing"}};

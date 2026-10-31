@@ -1,7 +1,7 @@
 // The grimoire: polls /api/st, renders the top bar, the circle and the right column, posts actions.
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
-import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel } from "./stmodel.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
@@ -174,7 +174,9 @@ function pick(pid) {
     return;
   }
   if (selected === pid && view === "drawer") { selected = null; view = "ledger"; }
-  else { selected = pid; view = "drawer"; }
+  else { selected = pid; view = "drawer"; abilityTarget = null; reminderPicker = false; }
+  // the Storyteller has now read what this player wrote
+  if (view === "drawer" && (S.threads?.[pid] ?? []).some(m => m.from === "player" && !m.seen)) { act("read_thread", {pid}); return; }
   render();
 }
 
@@ -290,38 +292,68 @@ function roleDetails(p) {
   return h + `</div>`;
 }
 
-// Task 3 replaces this with the full drawer; until then: the old inspector's actions in the column
+// --- the token drawer ---
+let shootTarget = null, abilityTarget = null, reminderPicker = false;
+
 function drawer() {
   const p = S.players.find(x => x.pid === selected);
-  const i = S.players.indexOf(p);
+  const d = drawerModel(p, S, C);
   const id = p.pid;
-  let body = "";
-  if (S.phase === "lobby" || S.phase === "setup") {
-    body += `<div class="acts"><button class="btn quiet small" onclick="act('move_player', {pid:${q(id)}, delta:-1})">Move anticlockwise</button>
+  const head = `<div class="drawer-head"><button class="btn quiet small dim" onclick="closeDrawer()">← Back</button><button class="btn quiet small dim" onclick="closeDrawer()" aria-label="Close">✕</button></div>
+    <h2>${esc(d.name)} <span class="seat">seat ${d.seat}</span></h2>`;
+  if (S.phase === "lobby" || S.phase === "setup") return head + lobbyDrawer(p);
+  if (S.phase === "over") return head + roleDetails(p);
+  const role = d.role ? `<div class="role-line ${d.role.team}-text">${glyph(d.role.id)}${esc(d.role.name)} <span class="note">${esc(d.role.kind)}, ${d.role.team} team${d.thinks ? ` · thinks they are the ${esc(d.thinks)}` : ""}</span></div>
+    <p class="note" style="color:var(--ink)">${esc(d.role.ability)}</p>` : "";
+  const status = `<div class="toggles">${d.status.map(s => `<button class="tog" aria-pressed="${s.on}" onclick="act('${s.action.name}', ${JSON.stringify(s.action.body).replace(/"/g, "&quot;")})">${esc(s.label)}</button>`).join("")}</div>`;
+  const rems = `<h3>Reminders</h3><div class="chips">${d.reminders.map(r => `<span class="rem ${r.cls} big">${esc(r.text)} <button class="x" aria-label="Remove ${esc(r.text)}" onclick="act('set_reminder', {pid:${q(id)}, text:${q(r.text)}, on:false})">✕</button></span>`).join("")}
+      <button class="btn quiet small" onclick="ui.picker(${!reminderPicker})">+ Reminder</button></div>
+    ${reminderPicker ? `<div class="chips picker">${d.options.map(t => `<button class="tog" onclick="ui.picker(false); act('set_reminder', {pid:${q(id)}, text:${q(t)}, on:true})">${esc(t)}</button>`).join("")}</div>` : ""}`;
+  const exempt = d.showExempt ? `<h3>Night check</h3><label class="line note"><input type="checkbox" ${d.exempt ? "checked" : ""} onchange="act('set_exempt', {pid:${q(id)}, on:this.checked})"> Exempt from the night check (a remote player)</label>` : "";
+  const night = S.phase === "night";
+  const thread = `<h3>Thread with ${esc(d.name)}</h3>
+    <div class="thread">${d.thread.slice(-6).map(m => `<div class="bub ${m.from === "player" ? "them" : "me"}">${esc(m.text)}</div>`).join("") || `<p class="note">Nothing yet.</p>`}</div>
+    <div class="line"><input id="msg-${id}" placeholder="Message ${esc(d.name)}" style="flex:1" autocomplete="off">
+      <button class="btn small" onclick="act('message', {pid:${q(id)}, text: val('msg-${id}')}, 'msg-${id}')">${night ? "Hold until dawn" : "Send"}</button>
+      ${night ? `<button class="btn quiet small" onclick="act('message', {pid:${q(id)}, text: val('msg-${id}'), now: true}, 'msg-${id}')">Send now</button>` : ""}</div>`;
+  const change = `<details class="tools"><summary>Change character</summary><div class="line"><select id="ch-${id}">${charOpts(p.character)}</select>
+      <button class="btn quiet small" onclick="act('set_character', {pid:${q(id)}, character: val('ch-${id}')}, 'ch-${id}')">Change</button></div></details>`;
+  return head + role + status + abilityBlock(p, d) + rems + exempt + thread + change;
+}
+
+function lobbyDrawer(p) {
+  const id = p.pid;
+  let body = `<div class="acts"><button class="btn quiet small" onclick="act('move_player', {pid:${q(id)}, delta:-1})">Move anticlockwise</button>
       <button class="btn quiet small" onclick="act('move_player', {pid:${q(id)}, delta:1})">Move clockwise</button></div>`;
-  }
   if (S.phase === "lobby") body += `<div class="acts"><button class="btn quiet small" onclick="act('remove_player', {pid:${q(id)}})">Remove from the game</button></div>`;
   if (S.phase === "setup") {
     body += `<label class="field"><span>Character</span><select onchange="act('set_character', {pid:${q(id)}, character:this.value})">${charOpts(p.character)}</select></label>`;
     if (C[p.character]?.fake) body += `<label class="field"><span>Believes they are</span><select onchange="act('set_character', {pid:${q(id)}, character:${q(p.character)}, believed:this.value})">${charOpts(p.believed, C[p.character].fake)}</select></label>`;
     body += roleDetails(p);
   }
-  if (S.phase === "night" || S.phase === "day") {
-    body += `${roleDetails(p)}
-      <div class="acts">
-        ${p.alive ? `<button class="btn quiet small" onclick="act('kill', {pid:${q(id)}})">Kill</button>` : `<button class="btn quiet small" onclick="act('revive', {pid:${q(id)}})">Bring back</button>`}
-        <button class="btn quiet small" onclick="act('set_reminder', {pid:${q(id)}, text:'poisoned', on:${!p.reminders.includes("poisoned")}})">${p.reminders.includes("poisoned") ? "Cure poison" : "Poison"}</button>
-        ${!p.alive ? `<button class="btn quiet small" onclick="act('set_ghost_vote', {pid:${q(id)}, value:${!p.ghost_vote}})">${p.ghost_vote ? "Spend their vote" : "Return their vote"}</button>` : ""}
-      </div>
-      <label class="field"><span>Private message</span><textarea id="msg-${id}" placeholder="Only ${esc(p.name)} sees this"></textarea></label>
-      <div class="acts"><button class="btn small" onclick="act('message', {pid:${q(id)}, text: val('msg-${id}')}, 'msg-${id}')">${S.phase === "night" ? `Hold for ${esc(p.name)} until dawn` : `Send to ${esc(p.name)}`}</button>
-        ${S.phase === "night" ? `<button class="btn quiet small" onclick="act('message', {pid:${q(id)}, text: val('msg-${id}'), now: true}, 'msg-${id}')">Send now, silently</button>` : ""}</div>
-      <label class="field"><span>Change character</span><select id="ch-${id}">${charOpts(p.character)}</select></label>
-      <div class="acts"><button class="btn quiet small" onclick="act('set_character', {pid:${q(id)}, character: val('ch-${id}')}, 'ch-${id}')">Change character</button></div>`;
+  return body;
+}
+
+function abilityBlock(p, d) {
+  const a = d.ability;
+  if (!a.title) return "";
+  const id = p.pid;
+  let action = "";
+  const targets = (filter) => S.players.filter(x => x.pid !== id && filter(x)).map(x =>
+    `<button class="pick" aria-pressed="${abilityTarget === x.pid}" onclick="ui.target(${q(x.pid)})">${glyph(x.character)}${esc(x.name)}</button>`).join("");
+  if (a.kind === "shoot") {
+    action = `<p class="note">${esc(p.name)} shoots at</p><div class="picks">${targets(x => x.alive)}</div>
+      <label class="line note"><input type="checkbox" id="recluse-${id}"> The Recluse registers as the Demon</label>
+      <div class="acts"><button class="btn small" ${abilityTarget ? "" : "disabled"} onclick="ui.target(null); act('day_ability', {pid:${q(id)}, options:{target:${q(abilityTarget)}, recluse_as_demon: val('recluse-${id}')}})">Resolve the shot</button></div>`;
+  } else if (a.kind === "gossip") {
+    action = `<p class="note">Was today's statement true? If so, you pick who dies tonight.</p>
+      <div class="acts"><button class="btn small" onclick="act('day_ability', {pid:${q(id)}, options:{true:true}})">True</button><button class="btn quiet small" onclick="act('day_ability', {pid:${q(id)}, options:{true:false}})">False</button></div>`;
+  } else if (a.kind === "moonchild") {
+    action = `<p class="note">${esc(p.name)} chooses, out loud</p><div class="picks">${targets(x => x.alive)}</div>
+      <div class="acts"><button class="btn small" ${abilityTarget ? "" : "disabled"} onclick="ui.target(null); act('day_ability', {pid:${q(id)}, options:{target:${q(abilityTarget)}}})">Record the choice</button></div>`;
   }
-  if (S.phase === "over") body += roleDetails(p);
-  return `<div class="drawer-head"><button class="btn quiet small dim" onclick="closeDrawer()">← Back</button><button class="btn quiet small dim" onclick="closeDrawer()" aria-label="Close">✕</button></div>
-    <h2>${esc(p.name)} <span class="seat">seat ${i + 1}</span></h2>${body}`;
+  return `<div class="card-soft"><div class="line" style="justify-content:space-between;margin:0"><span class="disp">${esc(a.title)}</span><span class="state">${esc(a.state)}</span></div>
+    ${a.note ? `<p class="note">${esc(a.note)}</p>` : ""}${action}</div>`;
 }
 
 function messages() {
@@ -458,6 +490,8 @@ function logBlock() {
 // inline handlers in the templates reach module state through these
 const ui = {
   open(i, rerender = true) { openStep = i; if (rerender) render(); },
+  target(pid) { abilityTarget = pid; render(); },
+  picker(on) { reminderPicker = on; render(); },
   tools(v) { toolsOpen = v; },
   log(v) { logOpen = v; },
   deselect() { selected = null; view = "ledger"; },
