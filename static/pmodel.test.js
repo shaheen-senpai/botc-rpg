@@ -12,7 +12,7 @@ test("abilityLine names a once-per-game ability's state", () => {
 });
 
 const seatsV = {phase: "day", day: 2, threshold: 3, announcements: ["Dawn. Finn died in the night."], hands: ["p8"], clock: null,
-  seats: [["p1", "Asha", true], ["p2", "Ben", true], ["p3", "Chen", true], ["p6", "Finn", false], ["p8", "Hari", true]].map(([pid, name, alive]) => ({pid, name, alive, ghost_vote: true})),
+  seats: [["p1", "Asha", true], ["p2", "Ben", true], ["p3", "Chen", true], ["p6", "Finn", false], ["p8", "Hari", true]].map(([pid, name, alive]) => ({pid, name, alive, ghost_vote: true, character: null})),
   nominations: [{nominator: "Asha", nominee: "Dev", votes: 3}]};
 
 test("thread groups by label and keeps the open prompt last", () => {
@@ -50,7 +50,7 @@ test("thread marks seen on the last outgoing only", () => {
 
 test("square lists seats with hands and marks, and today's news", () => {
   const sq = square(seatsV, {pid: "p3"});
-  assert.deepEqual(sq.seats[4], {pid: "p8", name: "Hari", no: 5, alive: true, me: false, hand: true, mark: null, ghost: false});
+  assert.deepEqual(sq.seats[4], {pid: "p8", name: "Hari", no: 5, alive: true, me: false, hand: true, mark: null, ghost: false, character: null});
   assert.equal(sq.seats[2].me, true);
   assert.deepEqual(sq.centre, {big: "3", small: "votes to execute"});
   assert.deepEqual(sq.nominations, [{text: "Asha nominates Dev", note: "3 votes, enough"}]);
@@ -69,13 +69,16 @@ test("handButton during a clock", () => {
   const clock = {nomination: 0, nominator: "p1", nominee: "p2", state: "running", go_at: 100, seat_seconds: 3, paused_at: null, paused_total: 0, hands: ["p3", "p8"], locked: {p8: true}};
   const v = {...seatsV, clock};
   // Chen (p3): seat 3, nominee Ben is seat 2 → offset 1 → locks at 3 s; now is 1 s after go
-  assert.deepEqual(handButton(v, {pid: "p3", alive: true, ghost_vote: true}, 101), {label: "✋ Hand up", pressed: true, disabled: false, hint: "The hand reaches you in 2 s."});
-  assert.deepEqual(handButton(v, {pid: "p8", alive: true, ghost_vote: true}, 101), {label: "✋ Hand up", pressed: true, disabled: true, hint: "Hand up, counted."});
-  assert.equal(handButton(v, {pid: "p6", alive: false, ghost_vote: true}, 101).label, "Use my last vote");
-  assert.deepEqual(handButton(v, {pid: "p6", alive: false, ghost_vote: false}, 101), {label: "Raise hand", pressed: false, disabled: true, hint: "No vote left."});
-  const butler = handButton(v, {pid: "p3", alive: true, ghost_vote: true, role: {id: "butler"}}, 101, "p1");
+  assert.deepEqual(handButton(v, {pid: "p3", alive: true}, 101), {label: "✋ Hand up", pressed: true, disabled: false, hint: "The hand reaches you in 2 s."});
+  assert.deepEqual(handButton(v, {pid: "p8", alive: true}, 101), {label: "✋ Hand up", pressed: true, disabled: true, hint: "Hand up, counted."});
+  // player_view carries no ghost_vote on `me`: the page must read it from the seat
+  assert.equal(handButton(v, {pid: "p6", alive: false}, 101).label, "Use my last vote");
+  assert.equal(handButton(v, {pid: "p6", alive: false}, 101).disabled, false);
+  const spent = {...v, seats: v.seats.map(x => x.pid === "p6" ? {...x, ghost_vote: false} : x)};
+  assert.deepEqual(handButton(spent, {pid: "p6", alive: false}, 101), {label: "Raise hand", pressed: false, disabled: true, hint: "No vote left."});
+  const butler = handButton(v, {pid: "p3", alive: true, role: {id: "butler"}}, 101, "p1");
   assert.match(butler.hint, /Asha's hand is down/);
-  assert.equal(handButton({...v, clock: {...clock, go_at: 105}}, {pid: "p3", alive: true, ghost_vote: true}, 101).hint, "The clock is about to start.");
+  assert.equal(handButton({...v, clock: {...clock, go_at: 105}}, {pid: "p3", alive: true}, 101).hint, "The clock is about to start.");
 });
 
 const night = {phase: "night", night: 2, buzz: 3, clock: null, hands: []};
@@ -110,4 +113,18 @@ test("tabs marks messages and square fresh", () => {
 test("layout switches at 900px", () => {
   assert.equal(layout(899), "phone");
   assert.equal(layout(900), "laptop");
+});
+
+
+test("square drops a finished clock's marks and shows nominate hands again", () => {
+  const done = {...seatsV, hands: ["p1"], clock: {nomination: 0, nominator: "p1", nominee: "p2", state: "done", hands: ["p3"], locked: {p1: false, p2: false, p3: true, p6: false, p8: false}}};
+  const sq = square(done, {pid: "p3"});
+  assert.deepEqual(sq.seats.map(s => s.mark), [null, null, null, null, null]);
+  assert.equal(sq.seats[0].hand, true);
+});
+
+test("square reveals characters when the game is over", () => {
+  const over = {...seatsV, phase: "over", seats: seatsV.seats.map((x, i) => ({...x, character: ["imp", "empath", "slayer", "monk", "saint"][i]}))};
+  assert.deepEqual(square(over, {pid: "p3"}).seats.map(s => s.character), ["imp", "empath", "slayer", "monk", "saint"]);
+  assert.equal(square(seatsV, {pid: "p3"}).seats[0].character, null);
 });

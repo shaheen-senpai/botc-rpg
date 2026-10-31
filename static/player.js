@@ -2,7 +2,7 @@
 // and the vote; posts joins, picks, taps, messages and hands. Pure render data comes from pmodel.js / clockmath.js.
 
 import { nudge, tabs, layout, abilityLine, thread as threadModel, square as squareModel, handButton } from "./pmodel.js";
-import { handAngle, handIndex, serverNow } from "./clockmath.js";
+import { handAngle, handIndex, elapsed, serverNow, clockSound } from "./clockmath.js";
 import { sound } from "./sound.js";
 
 const $app = document.getElementById("app");
@@ -34,6 +34,9 @@ const EMBLEM = `<svg viewBox="0 0 100 100" aria-hidden="true">
     <path d="M50 44 L50 27" stroke="#B23A33" stroke-width="0.9" transform="rotate(${i * 72} 50 50)"/>`).join("")}
   <circle cx="50" cy="50" r="3.2" fill="#F5BC55"/></svg>`;
 const SEAL = `<span class="seal" aria-hidden="true">S</span>`;
+// what sits under the "Tap to read" blur: identical for every player, whatever their thread holds
+const MASK = `<p class="when">Tonight</p><div class="bub st">${SEAL}The Storyteller's words wait here.</div>
+  <div class="bub me">Only you can open them.</div><div class="bub st">${SEAL}Shield your screen first.</div>`;
 
 async function api(path, body) {
   const res = await fetch(path, body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
@@ -53,8 +56,8 @@ async function poll() {
     if (token && /join again/.test(e.message)) { token = null; localStorage.removeItem("tb_token"); state = null; }
     error = e.message;
   }
-  // re-rendering while typing would wipe the field
-  if (["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+  // the join form's name field has no draft state, so don't wipe it; everywhere else render() keeps the composer's text
+  if (!state?.me && ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
   if (!state || state.version !== lastVersion || error) { lastVersion = state?.version; render(); }
 }
 
@@ -93,8 +96,8 @@ function armHide() {
 }
 
 function tickHide() {
-  const e = document.getElementById("hide-in");
-  if (e) e.textContent = Math.max(0, Math.ceil((hideAt - Date.now()) / 1000));
+  const left = Math.max(0, Math.ceil((hideAt - Date.now()) / 1000));
+  document.querySelectorAll(".hide-in").forEach(e => { e.textContent = left; });
 }
 
 function show(v) {
@@ -102,6 +105,8 @@ function show(v) {
   if (v === "messages" && revealed) markSeen();
   scrollTo(0, 0);
   render();
+  // the newest message is at the bottom, next to the composer
+  if (v === "messages") document.querySelector(".composer")?.scrollIntoView({block: "end"});
 }
 
 // --- player actions ---
@@ -183,7 +188,7 @@ function character(me) {
         <div class="face front"><div class="token ${c}"><span class="char">${revealed ? glyph(r.id) + esc(r.name) : ""}</span></div></div>
       </div>
     </button>
-    <div class="hint">${revealed ? `Hides by itself in <span id="hide-in">${Math.max(0, Math.ceil((hideAt - Date.now()) / 1000))}</span>s. Tap the token to hide it now.` : "Shield your screen, then tap to see your character"}</div>
+    <div class="hint">${revealed ? `Hides by itself in <span class="hide-in">${Math.max(0, Math.ceil((hideAt - Date.now()) / 1000))}</span>s. Tap the token to hide it now.` : "Shield your screen, then tap to see your character"}</div>
     ${revealed ? `<div class="ability"><div class="team ${c}-text">${TYPE_LABEL[r.type]}, ${t === "good" ? "on the good team" : "on the evil team"}</div><p>${esc(r.ability)}</p>${line ? `<p class="line-state">${esc(line)}</p>` : ""}</div>` : ""}
   </div>`;
 }
@@ -219,17 +224,12 @@ function thread(me) {
   }).join("");
   const body = items || `<p class="empty">Nothing from the Storyteller yet. What you learn at night arrives here.</p>`;
   return `<section class="messages">
-    <div class="thread-head">${SEAL}<div><div class="who">Storyteller</div><div class="empty">Only you and the Storyteller see this.${revealed ? ` Hides in <span id="hide-in">${Math.max(0, Math.ceil((hideAt - Date.now()) / 1000))}</span> s.` : ""}</div></div></div>
-    ${revealed ? `<div class="thread">${body}</div>` : `<div class="masked"><div class="thread blur" aria-hidden="true" inert>${body}</div><button class="tap" onclick="flip()">Tap to read</button></div>`}
+    <div class="thread-head">${SEAL}<div><div class="who">Storyteller</div><div class="empty">Only you and the Storyteller see this.${revealed ? ` Hides in <span class="hide-in">${Math.max(0, Math.ceil((hideAt - Date.now()) / 1000))}</span> s.` : ""}</div></div></div>
+    ${revealed ? `<div class="thread">${body}</div>` : `<div class="masked"><div class="thread blur" aria-hidden="true" inert>${MASK}</div><button class="tap" onclick="flip()">Tap to read</button></div>`}
     <form class="composer" onsubmit="sendMessage(); return false">
-      <input id="msg" placeholder="Message the Storyteller" maxlength="500" autocomplete="off" value="${esc(draft)}" oninput="setDraft(this.value)">
+      <input id="msg" aria-label="Message the Storyteller" placeholder="Message the Storyteller" maxlength="500" autocomplete="off" value="${esc(draft)}" oninput="setDraft(this.value)">
       <button type="submit" class="send" aria-label="Send" ${draft.trim() ? "" : "disabled"}>↑</button></form>
     ${sentNote ? `<p class="empty">Sent.</p>` : ""}</section>`;
-}
-
-function dialClock(s) {
-  const c = s.clock;
-  return c && (c.state !== "done" || (s.phase === "day" && s.nominations.length)) ? c : null;
 }
 
 function square(s, me) {
@@ -241,23 +241,24 @@ function square(s, me) {
     const left = 50 + 38 * Math.cos(a), top = 50 + 40 * Math.sin(a);
     const cls = [x.me ? "me" : "", x.alive ? "" : "dead", x.hand || x.mark === "up" ? "hand" : "", x.mark === "yes" ? "yes" : "", x.mark === "no" ? "no" : "", x.mark === "nominee" ? "nom" : ""].join(" ");
     const text = x.mark === "yes" ? "✓" : x.mark === "no" ? "–" : (x.hand || x.mark === "up") ? "✋" : x.no;
-    const sub = !x.alive ? `<small>${x.ghost ? "has a vote" : "no vote left"}</small>` : "";
+    const sub = x.character && chars[x.character]
+      ? `<small class="${tone(chars[x.character].type)}-text">${esc(chars[x.character].name)}</small>`
+      : !x.alive ? `<small>${x.ghost ? "has a vote" : "no vote left"}</small>` : "";
     return `<div class="seat ${x.alive ? "" : "dead"} ${x.me ? "me" : ""}" style="left:${left}%;top:${top}%"><div class="dot ${cls}">${text}</div><div class="who">${esc(x.name)}${sub}</div></div>`;
   }).join("");
   let centre, head = "";
   if (c) {
     const now = serverNow(s, receivedAt);
-    const idx = handIndex(c, now);
     const yes = Object.values(c.locked).filter(Boolean).length;
     head = `<h2 class="vote-title">${esc(seatName(c.nominator))} nominates ${esc(seatName(c.nominee))}</h2><p class="empty centred">${yes} so far · ${s.threshold} to execute</p>`;
-    centre = `<div class="dial" aria-hidden="true"><div class="hand" id="phand" style="transform: rotate(${handAngle(s.seats.map(x => x.pid), c, now)}deg)"></div><div class="boss"></div><div class="count" id="pcount">${idx < 0 ? Math.min(3, Math.ceil(c.go_at - now)) : ""}</div></div>`;
+    centre = `<div class="dial" aria-hidden="true"><div class="hand" id="phand" style="transform: rotate(${handAngle(s.seats.map(x => x.pid), c, now)}deg)"></div><div class="boss"></div><div class="count" id="pcount">${countdownDigit(c, now)}</div></div>`;
   } else {
     centre = `<div class="center"><b>${esc(sq.centre.big)}</b><span>${esc(sq.centre.small)}</span></div>`;
   }
   const b = handButton(s, me, serverNow(s, receivedAt), localStorage.getItem("tb_master"));
   const button = s.phase === "day" ? `<div class="handbox">
       <button class="big ${b.pressed ? "up" : ""}" aria-pressed="${b.pressed}" ${b.disabled ? "disabled" : ""} onclick="toggleHand()">${esc(b.label)}</button>
-      <p class="empty centred" id="handhint">${esc(handError || b.hint)}${c ? "" : " On a laptop, Space does the same."}</p></div>` : "";
+      <p class="empty centred"><span id="handhint">${esc(handError || b.hint)}</span>${c && isLaptop() ? " Space does the same." : ""}</p></div>` : "";
   const today = sq.today.length ? `<section><h2>${s.phase === "day" ? "Today" : "Last heard"}</h2><ul class="crier">${sq.today.map(a => `<li>${esc(a)}</li>`).join("")}</ul></section>` : "";
   const noms = sq.nominations.length ? `<ul class="crier">${sq.nominations.map(x => `<li>${esc(x.text)} <span class="empty">${esc(x.note)}</span></li>`).join("")}</ul>` : "";
   return `<section class="square">${head || `<h2>Town square</h2>`}<div class="ring">${seats}${centre}</div>${button}${noms}</section>${today}`;
@@ -296,7 +297,10 @@ function render() {
   // a vote just started: the phone switches to the square by itself, once per clock
   const live = s.clock && s.clock.state !== "done" ? s.clock : null;
   const clockKey = live ? `${live.nomination}:${live.go_at}` : null;
-  if (live && clockKey !== lastClockKey && !isLaptop()) view = "square";
+  if (clockKey !== lastClockKey) {
+    handError = "";
+    if (live && !isLaptop()) view = "square";
+  }
   lastClockKey = clockKey;
 
   const nd = nudge(s, me, revealed, seen);
@@ -316,26 +320,33 @@ function render() {
     else html += almanac();
     html += `<nav class="tabs">${tabs(s, me, view, seen).map(t => `<button onclick="show('${t.id}')" ${t.current ? 'aria-current="page"' : ""}>${t.label}${t.fresh ? `<span class="fresh" aria-label="new"></span>` : ""}</button>`).join("")}</nav>`;
   }
+  const typing = document.activeElement?.id === "msg" ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
   $app.innerHTML = html;
   fitNames($app);
+  if (typing) { const m = document.getElementById("msg"); m.focus(); m.setSelectionRange(...typing); }
+  if (isLaptop()) { const t = document.querySelector(".cols .messages .thread"); if (t) t.scrollTop = t.scrollHeight; }
 }
 
 // between polls: move the hand and the countdown on the server's clock; buzz and chime at go, a tick per seat
+function countdownDigit(c, now) {
+  const left = -elapsed(c, now);
+  return left > 0 ? String(Math.min(3, Math.ceil(left))) : "";
+}
+
 function tickDial() {
-  const c = state?.clock && state.clock.state !== "done" ? state.clock : null;
-  const hand = document.getElementById("phand");
-  if (!c || !hand) { lastHandIdx = null; return; }
+  const c = state?.me && state.clock && state.clock.state !== "done" ? state.clock : null;
+  if (!c) { lastHandIdx = null; return; }
   const now = serverNow(state, receivedAt);
-  hand.style.transform = `rotate(${handAngle(state.seats.map(x => x.pid), c, now)}deg)`;
-  const idx = c.state === "paused" ? lastHandIdx : handIndex(c, now);
+  const hand = document.getElementById("phand");
+  if (hand) hand.style.transform = `rotate(${handAngle(state.seats.map(x => x.pid), c, now)}deg)`;
   const count = document.getElementById("pcount");
-  if (count) count.textContent = idx < 0 ? String(Math.min(3, Math.ceil(c.go_at - now))) : "";
+  if (count) count.textContent = countdownDigit(c, now);
   const hint = document.getElementById("handhint");
   if (hint && !handError) hint.textContent = handButton(state, state.me, now, localStorage.getItem("tb_master")).hint;
-  if (lastHandIdx !== null && idx !== null && idx > lastHandIdx) {
-    if (lastHandIdx < 0 && idx >= 0) { sound.buzz(); sound.chime(); }
-    else if (idx <= state.seats.length) sound.tick();
-  }
+  const idx = c.state === "paused" ? lastHandIdx : handIndex(c, now);
+  const cue = clockSound(lastHandIdx, idx, state.seats.length, c.state);
+  if (cue === "go") { sound.buzz(); sound.chime(); }
+  else if (cue === "tick") sound.tick();
   lastHandIdx = idx;
 }
 

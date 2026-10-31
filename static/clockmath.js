@@ -40,6 +40,14 @@ export function secondsUntil(seatPids, clock, now, pid) {
   return Math.max(0, Math.ceil(k * clock.seat_seconds - elapsed(clock, now)));
 }
 
+// which sound a step of the hand makes: "go" as it leaves the countdown, "tick" for each seat it reaches,
+// nothing while paused, past the last seat, or on the first sample after a page (re)loads
+export function clockSound(lastIdx, idx, n, state) {
+  if (lastIdx === null || idx === null || idx <= lastIdx || state === "paused") return null;
+  if (lastIdx < 0 && idx >= 0) return "go";
+  return idx <= n ? "tick" : null;
+}
+
 // the server's clock now, from the server_time a poll carried and how long ago it arrived
 export function serverNow(view, receivedAtMs, nowMs = Date.now()) {
   return view.server_time + (nowMs - receivedAtMs) / 1000;

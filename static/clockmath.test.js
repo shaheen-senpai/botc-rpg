@@ -1,7 +1,7 @@
 // Vote-clock maths shared by both pages. Run: node --test "static/*.test.js"
 import test from "node:test";
 import assert from "node:assert/strict";
-import { seatAngle, offset, elapsed, handIndex, handAngle, secondsUntil, serverNow } from "./clockmath.js";
+import { seatAngle, offset, elapsed, handIndex, handAngle, secondsUntil, serverNow, clockSound } from "./clockmath.js";
 
 const seats = ["p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"];
 const clock = (over = {}) => ({state: "running", go_at: 1000, seat_seconds: 3, paused_at: null, paused_total: 0, hands: [], locked: {}, nominee: "p2", ...over});
@@ -36,4 +36,14 @@ test("secondsUntil counts down to a seat and is null once locked", () => {
 
 test("serverNow adds the local delta since the poll", () => {
   assert.equal(serverNow({server_time: 5000}, 10_000, 12_500), 5002.5);
+});
+
+test("clockSound: go once when the hand leaves the countdown, a tick per seat, nothing paused or past the end", () => {
+  assert.equal(clockSound(-1, 0, 7, "running"), "go");
+  assert.equal(clockSound(0, 1, 7, "running"), "tick");
+  assert.equal(clockSound(3, 3, 7, "running"), null);
+  assert.equal(clockSound(6, 7, 7, "running"), "tick");
+  assert.equal(clockSound(7, 8, 7, "running"), null);
+  assert.equal(clockSound(2, 3, 7, "paused"), null);
+  assert.equal(clockSound(null, 2, 7, "running"), null);   // first sample after (re)joining: no catch-up noise
 });

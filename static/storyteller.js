@@ -2,7 +2,7 @@
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
 import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel, messagesModel } from "./stmodel.js";
-import { handAngle, handIndex, elapsed, serverNow } from "./clockmath.js";
+import { handAngle, handIndex, elapsed, serverNow, clockSound } from "./clockmath.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
@@ -193,10 +193,9 @@ function tickDial() {
   const idx = c.state === "paused" ? lastHandIdx : handIndex(c, now);
   const count = el("count");
   if (count) count.textContent = countdownDigit(c, now);
-  if (lastHandIdx !== null && idx !== null && idx > lastHandIdx && c.state !== "done") {
-    if (lastHandIdx < 0 && idx >= 0) sound.chime();
-    else if (idx <= seats.length) sound.tick();
-  }
+  const cue = c.state === "done" ? null : clockSound(lastHandIdx, idx, seats.length, c.state);
+  if (cue === "go") sound.chime();
+  else if (cue === "tick") sound.tick();
   lastHandIdx = idx;
 }
 

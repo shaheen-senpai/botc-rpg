@@ -63,7 +63,8 @@ export function thread(me, v) {
 }
 
 export function square(v, me) {
-  const c = v.clock && v.clock.state !== "done" ? v.clock : (v.clock?.state === "done" ? v.clock : null);
+  // only a running vote marks the ring; once it is done the ring goes back to nominate hands
+  const c = v.clock && v.clock.state !== "done" ? v.clock : null;
   const seats = v.seats.map((s, i) => {
     let mark = null;
     if (c) {
@@ -71,7 +72,8 @@ export function square(v, me) {
       else if (c.hands.includes(s.pid)) mark = "up";
       else if (s.pid === c.nominee) mark = "nominee";
     }
-    return {pid: s.pid, name: s.name, no: i + 1, alive: s.alive, me: s.pid === me.pid, hand: !c && (v.hands || []).includes(s.pid), mark, ghost: !s.alive && s.ghost_vote};
+    return {pid: s.pid, name: s.name, no: i + 1, alive: s.alive, me: s.pid === me.pid, hand: !c && (v.hands || []).includes(s.pid), mark,
+      ghost: !s.alive && s.ghost_vote, character: s.character ?? null};
   });
   const alive = v.seats.filter(s => s.alive).length;
   const centre = v.phase === "day" ? {big: String(v.threshold), small: "votes to execute"} : {big: String(alive), small: `of ${v.seats.length} alive`};
@@ -96,8 +98,10 @@ export function handButton(v, me, now, masterPid = null) {
   }
   const up = c.hands.includes(me.pid);
   const locked = me.pid in c.locked;
-  const label = up ? "✋ Hand up" : (!me.alive && me.ghost_vote ? "Use my last vote" : "Raise hand");
-  if (!me.alive && !me.ghost_vote) return {label: "Raise hand", pressed: false, disabled: true, hint: "No vote left."};
+  // player_view puts the ghost vote on the seat, not on `me`
+  const ghost = !!v.seats.find(s => s.pid === me.pid)?.ghost_vote;
+  const label = up ? "✋ Hand up" : (!me.alive && ghost ? "Use my last vote" : "Raise hand");
+  if (!me.alive && !ghost) return {label: "Raise hand", pressed: false, disabled: true, hint: "No vote left."};
   if (locked) return {label, pressed: up, disabled: true, hint: c.locked[me.pid] ? "Hand up, counted." : (up ? "Hand up but not counted." : "Hand down, not counted.")};
   const elapsed = (c.paused_at ?? now) - c.go_at - c.paused_total;
   if (elapsed < 0) return {label, pressed: up, disabled: false, hint: "The clock is about to start."};
