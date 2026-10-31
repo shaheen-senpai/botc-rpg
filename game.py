@@ -50,6 +50,8 @@ class Player:
     messages: list[dict] = field(default_factory=list)
     prompt: dict | None = None
     phone: bool = False
+    # exempt from the night check: still prompted for real choices, never waited for
+    exempt: bool = False
     reminders: list[dict] = field(default_factory=list)
     # a once-per-game ability (or a first-death save) has been spent
     used: bool = False
@@ -63,6 +65,8 @@ class Game:
         self.rng = rng or random.Random()
         self.clock = clock
         self.script = self._script(script)
+        # phones tap three icons at night so real choices do not stand out; off for remote games
+        self.night_check = True
         self.players: list[Player] = []
         self.version = 0
         self._next_pid = 1
@@ -95,6 +99,8 @@ class Game:
         # pid -> private texts held until the next table-wide buzz
         self.queued: dict[str, list[str]] = {}
         self.second_round_done = False
+        # the Storyteller stopped waiting for phones this night
+        self.waiting_stopped = False
         # notes from players to the Storyteller: [{"pid", "text", "label", "read"}]
         self.inbox: list[dict] = []
         for p in self.players:
@@ -231,6 +237,23 @@ class Game:
         """Choose the script (lobby only)."""
         self._require("lobby")
         self.script = self._script(script)
+
+    def set_night_check(self, on: bool) -> None:
+        """Turn the night check on or off for this game (off for remote games)."""
+        self.night_check = bool(on)
+        self._log(f"Night check {'on' if on else 'off'}")
+
+    def set_exempt(self, pid: str, on: bool) -> None:
+        """Exempt one player from the night check (a remote player at an in-room game)."""
+        p = self.get(pid)
+        p.exempt = bool(on)
+        self._log(f"{p.name} {'exempt from' if on else 'back in'} the night check")
+
+    def stop_waiting(self) -> None:
+        """Release the second buzz and dawn for every phone still pending tonight."""
+        self._require("night")
+        self.waiting_stopped = True
+        self._log("Storyteller stopped waiting for phones")
 
     def add_player(self, name: str, phone: bool = False) -> Player:
         """Seat a new player at the end of the circle (lobby only). Returns the player incl. token.
@@ -399,6 +422,7 @@ class Game:
         self._expire("night")
         self.night_deaths = []
         self.second_round_done = False
+        self.waiting_stopped = False
         for p in self.players:
             p.prompt = None
         self.steps = self._build_steps()
@@ -449,8 +473,10 @@ class Game:
                         "options": options, "answer": None, "step": None}
 
     def _phone_players(self) -> list[Player]:
-        """Publicly alive players with a phone: everyone a night round waits for."""
-        return [p for p in self.players if p.phone and self._publicly_alive(p)]
+        """Publicly alive, non-exempt players with a phone: everyone a night round waits for (nobody when the check is off)."""
+        if not self.night_check:
+            return []
+        return [p for p in self.players if p.phone and not p.exempt and self._publicly_alive(p)]
 
     def phones_waiting(self) -> list[Player]:
         """Phone players who still have an unanswered prompt (tap task or real choice)."""
@@ -462,7 +488,9 @@ class Game:
         return len(phones) - len(self.phones_waiting()), len(phones)
 
     def _require_phones_done(self, before: str) -> None:
-        """Refuse to go on while any phone player has not finished; there is no override."""
+        """Refuse to go on while any phone player has not finished, unless the Storyteller stopped waiting."""
+        if self.waiting_stopped:
+            return
         waiting = [p.name for p in self.phones_waiting()]
         if waiting:
             raise GameError(f"Waiting for {' and '.join(waiting) if len(waiting) < 3 else ', '.join(waiting)} "
@@ -927,9 +955,10 @@ class Game:
                           "asked": self._asked(i), "hint": hint})
         return {
             **self.public_view(),
+            "night_check": self.night_check, "waiting_stopped": self.waiting_stopped,
             "players": [{"pid": p.pid, "name": p.name, "character": p.character, "believed": p.believed,
                          "alive": p.alive, "ghost_vote": p.ghost_vote, "reminders": [r["text"] for r in p.reminders],
-                         "ability": self.ability_state(p),
+                         "ability": self.ability_state(p), "exempt": p.exempt, "phone": p.phone,
                          "impaired": bool(p.character) and self.impaired(p)} for p in self.players],
             "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self._with_chip("poisoned"),
             "protected": self._with_chip("protected"), "master": self._with_chip("master"),

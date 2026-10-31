@@ -53,3 +53,41 @@ def test_ability_state_in_views():
     g = make(["imp", "poisoner", "slayer", "empath", "soldier"])
     assert g.storyteller_view()["players"][0]["ability"] == {"uses": "each_night", "used": False, "label": "Acts each night"}
     assert g.player_view(p(g, "Chen").token)["me"]["ability"]["label"] == "Unused"
+
+
+# --- night check ---
+
+def test_night_check_off_means_no_tap_tasks_and_no_waiting():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"], phones=True)
+    g.set_night_check(False)
+    to_night2(g)
+    assert all(not (x.prompt and x.prompt["kind"] == "tap") for x in g.players)
+    assert g.phones_done() == (0, 0)
+    g.resolve(step(g, "imp"), [p(g, "Dev").pid])   # would raise "Waiting for ..." with the check on
+
+
+def test_night_check_off_unblocks_dawn():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"], phones=True)
+    with pytest.raises(GameError):
+        g.start_day()
+    g.set_night_check(False)
+    g.start_day()
+    assert g.phase == "day"
+
+
+def test_exempt_still_gets_choice_prompt():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"], phones=True)
+    g.set_exempt(p(g, "Ben").pid, True)
+    g.stop_waiting()   # night 1's tap tasks would block dawn
+    to_night2(g)
+    assert p(g, "Ben").prompt["kind"] == "choose"
+    assert p(g, "Ben").pid not in [x["pid"] for x in g.storyteller_view()["phones"]]
+
+
+def test_stop_waiting_releases_dawn_once():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"], phones=True)
+    g.stop_waiting()
+    g.start_day()
+    g.end_day()
+    with pytest.raises(GameError):
+        g.start_day()

@@ -32,7 +32,8 @@ STATIC = Path(__file__).parent / "static"
 
 # Game methods the Storyteller page may call as POST /api/st/<name>
 ST_ACTIONS = {
-    "set_script", "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
+    "set_script", "set_night_check", "set_exempt", "stop_waiting",
+    "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
     "ask", "resolve", "second_round", "send", "finish_step", "message", "start_day", "nominate", "record_votes",
     "slayer_shot", "day_ability", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
     "declare_winner", "reset", "undo",
@@ -42,7 +43,8 @@ ST_ACTIONS = {
 # undo-button text per action; {name} is the player named by the body's pid
 ACTION_LABELS = {
     "set_script": "Choose the {body_script} script", "day_ability": "Use {name}'s ability",
-    "set_reminder": "Change {name}'s reminders",
+    "set_reminder": "Change {name}'s reminders", "set_night_check": "Night check {body_on}",
+    "set_exempt": "Night check for {name}", "stop_waiting": "Stop waiting for phones",
     "add_player": "Seat {body_name}", "remove_player": "Remove {name}", "move_player": "Move {name}",
     "deal": "Deal characters", "set_character": "Change {name}'s character", "set_setup": "Save red herring and bluffs",
     "start_game": "Start the game", "ask": "Ask again", "resolve": "Work out a night step", "second_round": "Second buzz",
@@ -109,7 +111,8 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
         pid = body.get("pid")
         name = next((p.name for p in game.players if p.pid == pid), "a player")
         return ACTION_LABELS[action].format(name=name, body_name=body.get("name", "a player"),
-                                            body_script=body.get("script", ""))
+                                            body_script=body.get("script", ""),
+                                            body_on="on" if body.get("on") else "off")
 
     def phone_view() -> str:
         # exactly what each phone receives, minus the version counter
