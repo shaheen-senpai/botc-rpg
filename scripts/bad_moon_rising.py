@@ -230,6 +230,8 @@ def step_applies(game: Game, step: dict) -> bool | None:
         return False
     if key == "godfather" and game.night > 1:
         return actor.alive and any(CHARACTERS[game.get(pid).character]["type"] == OUTSIDER for pid in game.died_today)
+    if key == "grandmother" and game.night > 1:
+        return False   # learns the grandchild once; the linked death is a rule, not a step
     if key == "gossip":
         return actor.alive and bool(S.get("gossip_true"))
     if key == "moonchild":
@@ -246,7 +248,7 @@ def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -
             game.mark(child, "grandchild")
         child = game.get(S["grandchild"])
         return f"Your grandchild is {child.name}, the {cname(child.character)}."
-    if key == "godfather":
+    if key == "godfather" and game.night == 1:
         outs = [cname(q.character) for q in game.players if CHARACTERS[q.character]["type"] == OUTSIDER]
         return f"The Outsiders in play are {' and '.join(outs)}." if outs else "There are no Outsiders in play."
     if key == "chambermaid":
@@ -332,7 +334,10 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
         _different_from_last_night(game, key, targets[0])
         if not game.impaired(actor) and CHARACTERS[targets[0].character]["type"] == DEMON:
             game.mark(targets[0], "exorcised", "dawn")
-            game._notify(targets[0].pid, f"The Exorcist is {actor.name}. You do not act tonight.")
+            # the Demon is woken and told now, and their kill prompt goes away
+            game._say(targets[0], f"The Exorcist is {actor.name}. You do not act tonight.")
+            if targets[0].prompt and targets[0].prompt["kind"] == "choose":
+                targets[0].prompt = None
             game._log(f"Exorcist picks the Demon {targets[0].name}: the Demon sleeps tonight")
     elif key == "innkeeper":
         drunk = options.get("drunk") or targets[0].pid
@@ -420,6 +425,17 @@ def _tea_lady_shields(game: Game, p: Player) -> bool:
 
 def may_die(game: Game, p: Player, cause: str) -> bool | str:
     """The script's saves: Sailor, Tea Lady, Fool, Innkeeper, Devil's Advocate, Zombuul; the Pacifist asks."""
+    if p.character == "zombuul" and not p.used:
+        p.used = True
+        game.mark(p, "registers dead")
+        if game.phase == "night":
+            game.night_deaths.append({"pid": p.pid, "cause": cause, "linked": game._dying > 0})
+        else:
+            game.died_today.append(p.pid)
+        game._log(f"{p.name} registers as dead: the Zombuul's first death")
+        return False
+    if cause == "assassin":
+        return True   # "they die, even if for some reason they could not"
     if p.character == "sailor" and not game.impaired(p):
         game._log(f"{p.name} cannot die: a sober Sailor")
         return False
@@ -430,17 +446,11 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
         p.used = True
         game._log(f"{p.name} does not die: the Fool's first death")
         return False
-    if cause in NIGHT_KILLS and cause != "assassin" and game.has(p, "protected"):
+    if cause in NIGHT_KILLS and game.has(p, "protected"):
         game._log(f"{p.name} survives: protected by the Innkeeper")
         return False
     if cause == "executed" and game.has(p, "survives execution"):
         game._log(f"{p.name} survives execution: the Devil's Advocate")
-        return False
-    if p.character == "zombuul" and not p.used:
-        p.used = True
-        game.mark(p, "registers dead")
-        game.died_today.append(p.pid)
-        game._log(f"{p.name} registers as dead: the Zombuul's first death")
         return False
     if cause == "executed" and game.is_good(p.character) and any(game._working(q, "pacifist") for q in game.players):
         return "ask: the Pacifist is in play; does the executed good player die?"
@@ -450,7 +460,7 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
 def on_death(game: Game, p: Player, cause: str) -> None:
     """The Grandmother dies with her grandchild; the Mastermind keeps the game going after the Demon's execution."""
     S = game.script_state
-    if game.has(p, "grandchild") and cause == "demon":
+    if game.has(p, "grandchild") and cause in ("demon", "pukka"):
         gran = next((q for q in game.players if game._working(q, "grandmother")), None)
         if gran:
             game._die(gran, "grandmother")

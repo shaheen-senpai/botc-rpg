@@ -217,6 +217,9 @@ def _demon_attack(game: Game, imp: Player, target: Player, redirect: str | None,
 
 def _star_pass(game: Game, imp: Player, new_demon: str | None) -> None:
     """Imp kills themselves: a living Minion (Scarlet Woman preferred) becomes the Imp."""
+    if may_die(game, imp, "demon") is not True:
+        game._log(f"Imp attacks themselves: {imp.name} survives, nobody becomes the Imp")
+        return
     minions = [p for p in game.players if p.alive and game._type_of(p) == MINION]
     heir = game.get(new_demon) if new_demon else (
         next((p for p in minions if p.character == "scarlet_woman"), None)
@@ -365,10 +368,11 @@ def day_ability(game: Game, p: Player, options: dict) -> None:
     t = game.get(options.get("target"))
     game._announce(f"{p.name} claims Slayer and shoots {t.name}.")
     hit = False
-    if p.alive and p.character == "slayer" and not p.used:
+    # a Drunk who believes they are the Slayer spends their (useless) shot too, so their phone looks the same
+    if p.alive and p.believed == "slayer" and not p.used:
         p.used = True
         is_demon = game._type_of(t) == DEMON or (t.character == "recluse" and options.get("recluse_as_demon"))
-        hit = not game.impaired(p) and is_demon and t.alive
+        hit = p.character == "slayer" and not game.impaired(p) and is_demon and t.alive
     if hit:
         game._announce(f"{t.name} dies.")
         game._die(t, "slayer")

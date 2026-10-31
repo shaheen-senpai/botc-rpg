@@ -29,6 +29,14 @@ def test_hand_and_message_routes_and_st_actions():
     assert c.post("/api/hand", json={"token": tok, "up": True}).status_code == 400   # lobby: day only
 
 
+def test_lobby_action_is_not_marked_seen_by_phones():
+    c, g = client()
+    c.post("/api/join", json={"name": "Asha"})
+    c.post("/api/join", json={"name": "Ben"})
+    st = c.post("/api/st/set_night_check?key=key", json={"on": False}).json()
+    assert st["undo"]["seen"] is False
+
+
 def test_every_storyteller_action_has_a_label():
     from server import ACTION_LABELS, NO_UNDO, ST_ACTIONS
     assert set(ST_ACTIONS) - NO_UNDO <= set(ACTION_LABELS)

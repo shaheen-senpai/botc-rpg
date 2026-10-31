@@ -78,6 +78,7 @@ class Game:
         self.players: list[Player] = []
         self.version = 0
         self._next_pid = 1
+        self._next_msg = 1
         # storyteller undo stack: [{"label", "seen", "state", "phone_inputs"}], newest last
         self.history: list[dict] = []
         # picks and taps made on phones; undo reports how many it throws away
@@ -127,9 +128,14 @@ class Game:
 
     ABILITY_LABELS = {"each_night": "Acts each night", "passive": "Passive", "none": ""}
 
-    def ability_state(self, p: Player) -> dict:
-        """{"uses": str, "used": bool, "label": str} for the token and the drawer."""
-        uses = self.C[p.character]["uses"] if p.character else "none"
+    def ability_state(self, p: Player, as_believed: bool = False) -> dict:
+        """{"uses": str, "used": bool, "label": str} for the token and the drawer.
+
+        as_believed reads the character the player believes they are (a Drunk's phone must not learn
+        from this that their ability is passive).
+        """
+        cid = p.believed if as_believed else p.character
+        uses = self.C[cid]["uses"] if cid else "none"
         label = self.ABILITY_LABELS.get(uses, "Used" if p.used else "Unused")
         return {"uses": uses, "used": p.used, "label": label}
 
@@ -522,9 +528,13 @@ class Game:
         """Hold a private text for the next table-wide buzz."""
         self.queued.setdefault(pid, []).append(text)
 
+    def _entry(self, sender: str, text: str) -> dict:
+        self._next_msg += 1
+        return {"id": self._next_msg, "from": sender, "text": text, "label": self._stamp(), "seen": False}
+
     def _say(self, p: Player, text: str) -> None:
         """Deliver a Storyteller text into p's thread now."""
-        p.thread.append({"from": "st", "text": text, "label": self._stamp(), "seen": False})
+        p.thread.append(self._entry("st", text))
 
     def _flush(self, filler: str | None = None) -> None:
         """Deliver held texts; with filler, every player without one gets filler instead."""
@@ -588,7 +598,7 @@ class Game:
         if not s["choose"]:
             raise GameError("This step has no choice to make")
         self.get(s["pids"][0]).prompt = {"kind": "choose", "text": s["prompt"], "count": s["choose"],
-                                         "allow_self": s["allow_self"], "answer": None, "step": step}
+                                         "variable": s["variable"], "allow_self": s["allow_self"], "answer": None, "step": step}
         s["answer"] = None
 
     def resolve(self, step: int, choices: list[str], **options) -> None:
@@ -606,12 +616,14 @@ class Game:
         actor = self.get(s["pids"][0])
         if not s["allow_self"] and actor in targets:
             raise GameError("This character cannot choose themselves")
-        # the Demon's pick triggers the second buzz, so check before anything is applied
-        demon_step = len(s["pids"]) == 1 and self._type_of(actor) == DEMON
+        if not self.step_applies(s):
+            raise GameError("This step does not happen tonight")
+        # the Demon's kill (nights 2+) triggers the second buzz, so check before anything is applied
+        demon_step = len(s["pids"]) == 1 and self._type_of(actor) == DEMON and self.night > 1
         if demon_step and not self.second_round_done:
             self._require_phones_done("the second buzz")
         self.script.apply(self, s, actor, targets, options)
-        if len(s["pids"]) == 1 and actor.pid not in self.woke_tonight:
+        if len(s["pids"]) == 1 and s["kind"] != "storyteller" and actor.pid not in self.woke_tonight:
             self.woke_tonight.append(actor.pid)
         if demon_step and self.phase == "night":
             self.second_round()
@@ -664,8 +676,10 @@ class Game:
         p = self.by_token(token)
         if not p.prompt or p.prompt["kind"] != "choose":
             raise GameError("Nothing to choose right now")
-        if len(choices) != p.prompt["count"] or len(set(choices)) != len(choices):
-            raise GameError(f"Choose exactly {p.prompt['count']} different player(s)")
+        n = p.prompt["count"]
+        fits = len(choices) == n or (p.prompt.get("variable") and len(choices) <= n)
+        if not fits or len(set(choices)) != len(choices):
+            raise GameError(f"Choose {'up to' if p.prompt.get('variable') else 'exactly'} {n} different player(s)")
         for c in choices:
             self.get(c)
         if not p.prompt["allow_self"] and p.pid in choices:
@@ -693,7 +707,7 @@ class Game:
             raise GameError("Write something first")
         if len(text) > 500:
             raise GameError("Keep it under 500 characters")
-        p.thread.append({"from": "player", "text": text, "label": self._stamp(), "seen": False})
+        p.thread.append(self._entry("player", text))
         self._log(f"Note from {p.name}: {text}")
 
     def read_thread(self, pid: str) -> None:
@@ -1128,7 +1142,7 @@ class Game:
 
     UNDO_DEPTH = 30
     # survive an undo: counters phones compare, the record of what happened (players' own messages: see undo)
-    _KEPT_ON_UNDO = ("version", "buzz", "log", "history", "_next_pid", "phone_inputs", "clock", "script")
+    _KEPT_ON_UNDO = ("version", "buzz", "log", "history", "_next_pid", "_next_msg", "phone_inputs", "clock", "script")
 
     def snapshot(self) -> dict:
         """Deep copy of everything an undo restores (all state except _KEPT_ON_UNDO)."""
@@ -1171,13 +1185,18 @@ class Game:
         entry = self.history.pop()
         restored = {p.pid for p in entry["state"]["players"]}
         joined = [p for p in self.players if p.pid not in restored]
-        # what players wrote since the snapshot is theirs to keep
-        written = {p.pid: [m for m in p.thread if m["from"] == "player"] for p in self.players}
+        # what players wrote since the snapshot is theirs to keep, and whether the Storyteller has read it
+        written = {p.pid: {m["id"]: m for m in p.thread if m["from"] == "player"} for p in self.players}
         self.__dict__.update(entry["state"])
         if self.phase == "lobby":
             self.players += joined
         for p in self.players:
-            p.thread += [m for m in written.get(p.pid, []) if m not in p.thread]
+            live = written.get(p.pid, {})
+            for m in p.thread:
+                if m["from"] == "player" and m["id"] in live:
+                    m["seen"] = live[m["id"]]["seen"]
+            have = {m["id"] for m in p.thread}
+            p.thread += [m for mid, m in sorted(live.items()) if mid not in have]
         self._log(f"Storyteller undid: {entry['label']}")
 
     # --- views ---
@@ -1212,9 +1231,11 @@ class Game:
     def _publicly_alive(self, p: Player) -> bool:
         """Alive as the table knows it: a player killed tonight still looks alive until dawn; a player
         who "registers dead" (the Zombuul's first death) looks dead while alive."""
+        if self.phase == "night" and p.pid in self._night_dead():
+            return True
         if self.has(p, "registers dead"):
             return False
-        return p.alive or (self.phase == "night" and p.pid in self._night_dead())
+        return p.alive
 
     def player_view(self, token: str) -> dict:
         """Public view plus the player's own role (as they believe it), messages and prompt."""
@@ -1223,7 +1244,7 @@ class Game:
         return {**self.public_view(), "me": {
             "pid": p.pid, "name": p.name, "alive": self._publicly_alive(p),
             "role": {"id": p.believed, **self.C[p.believed]} if started and p.believed else None,
-            "ability": self.ability_state(p) if started and p.believed else None,
+            "ability": self.ability_state(p, as_believed=True) if started and p.believed else None,
             "thread": p.thread, "prompt": p.prompt,
             # older clients: the Storyteller's side and the player's side as separate lists
             "messages": p.messages,

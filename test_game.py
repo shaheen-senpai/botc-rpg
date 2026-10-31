@@ -605,3 +605,24 @@ def test_night_kill_does_not_move_public_threshold():
     assert g.public_view()["threshold"] == before
     g.start_day()
     assert g.public_view()["threshold"] == g.threshold()
+
+
+# --- review fixes ---
+
+def test_drunk_sees_their_believed_ability_and_can_waste_a_shot():
+    g = make(["imp", "poisoner", "drunk", "empath", "soldier"])
+    g.set_character(p(g, "Chen").pid, "drunk", "slayer")
+    g.start_day()
+    assert g.player_view(p(g, "Chen").token)["me"]["ability"] == {"uses": "day", "used": False, "label": "Unused"}
+    g.day_ability(p(g, "Chen").pid, {"target": p(g, "Asha").pid})
+    assert p(g, "Asha").alive and p(g, "Chen").used
+    assert g.player_view(p(g, "Chen").token)["me"]["ability"]["label"] == "Used"
+
+
+def test_protected_imp_cannot_star_pass():
+    g = make(["imp", "scarlet_woman", "monk", "empath", "soldier"])
+    to_night2(g)
+    g.resolve(step(g, "monk"), [p(g, "Asha").pid])
+    g.resolve(step(g, "imp"), [p(g, "Asha").pid])
+    assert p(g, "Asha").alive and p(g, "Ben").character == "scarlet_woman"
+    assert sum(x.character == "imp" for x in g.players) == 1

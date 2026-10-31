@@ -124,8 +124,9 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
                                             body_on="on" if body.get("on") else "off")
 
     def phone_view() -> str:
-        # exactly what each phone receives, minus the version counter
-        views = [{k: x for k, x in game.player_view(p.token).items() if k != "version"} for p in game.players]
+        # exactly what each phone receives, minus what changes by itself with time
+        skip = {"version", "server_time", "clock"}
+        views = [{k: x for k, x in game.player_view(p.token).items() if k not in skip} for p in game.players]
         return json.dumps(views, sort_keys=True, default=str)
 
     def st_state() -> dict:

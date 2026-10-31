@@ -101,7 +101,8 @@ def test_thread_holds_both_directions_and_seen():
     g.message(p(g, "Dev").pid, "Hello")
     g.note_to_storyteller(p(g, "Dev").token, "Hi back")
     t = g.player_view(p(g, "Dev").token)["me"]["thread"]
-    assert t[0] == {"from": "st", "text": "Nothing to report tonight.", "label": "Night 1", "seen": False}
+    assert {k: t[0][k] for k in ("from", "text", "label", "seen")} == {"from": "st", "text": "Nothing to report tonight.", "label": "Night 1", "seen": False}
+    assert isinstance(t[0]["id"], int)
     assert [(m["from"], m["text"], m["seen"]) for m in t[1:]] == [("st", "Hello", False), ("player", "Hi back", False)]
     assert g.storyteller_view()["unread"] == 1
     g.read_thread(p(g, "Dev").pid)
@@ -231,3 +232,33 @@ def test_undo_start_clock_clears_clock():
     t[0] += 3 + 3 * 7
     g.undo()
     assert g.public_view()["clock"] is None and all(x.ghost_vote for x in g.players)
+
+
+# --- review fixes ---
+
+def test_undo_keeps_seen_state_and_repeated_texts():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    g.note_to_storyteller(p(g, "Dev").token, "ok")
+    before = g.snapshot()
+    g.message(p(g, "Dev").pid, "Hello")
+    g.push_undo("Message Dev", before, seen=True)
+    g.read_thread(p(g, "Dev").pid)
+    g.note_to_storyteller(p(g, "Dev").token, "ok")
+    g.undo()
+    t = [(m["from"], m["text"], m["seen"]) for m in p(g, "Dev").thread]
+    assert t == [("st", "Nothing to report tonight.", False), ("player", "ok", True), ("player", "ok", False)]
+
+
+def test_undo_start_clock_refunds_a_spent_ghost_vote():
+    g, t = vote_game()
+    g.kill(p(g, "Dev").pid)
+    g.set_hand(p(g, "Dev").pid, True)        # a dead player's hand, carried into the clock
+    before = g.snapshot()
+    g.start_clock(0)
+    g.push_undo("Start the clock", before, seen=True)
+    t[0] += 3 + 3 * 7
+    g.public_view()
+    assert p(g, "Dev").ghost_vote is False    # the auto-record spent it
+    g.undo()
+    assert g.public_view()["clock"] is None and p(g, "Dev").ghost_vote is True

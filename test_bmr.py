@@ -147,8 +147,7 @@ def test_exorcist_blocks_the_demon():
     to_night(g)
     g.resolve(step(g, "exorcist"), [p(g, "Asha").pid])
     assert g.step_applies(g.steps[step(g, "po")]) is False
-    g.start_day()
-    assert "Exorcist" in p(g, "Asha").thread[-1]["text"]
+    assert "Exorcist" in p(g, "Asha").thread[-1]["text"]   # told at once, not at dawn
 
 
 def test_exorcist_cannot_repeat_last_nights_pick():
@@ -348,3 +347,82 @@ def test_linked_death_is_marked_in_the_dawn_card():
     g.resolve(step(g, "po"), [child.pid])
     deaths = g.storyteller_view()["dawn"]["deaths"]
     assert [(d["pid"], d["linked"]) for d in deaths] == [(child.pid, False), (p(g, "Chen").pid, True)]
+
+
+# --- review fixes ---
+
+def test_po_phone_pick_accepts_one_or_nobody():
+    g = make(["po", "assassin", "sailor", "gossip", "gambler", "tinker", "fool"])
+    to_night(g)
+    g.choose(p(g, "Asha").token, [p(g, "Dev").pid])
+    assert g.steps[step(g, "po")]["answer"] == [p(g, "Dev").pid]
+    g.ask(step(g, "po"))
+    g.choose(p(g, "Asha").token, [])
+    assert g.steps[step(g, "po")]["answer"] == []
+
+
+def test_zombuul_night_death_is_hidden_until_dawn_and_announced():
+    g = make(["zombuul", "assassin", "sailor", "gossip", "gambler"])
+    g.kill(p(g, "Asha").pid)
+    assert g.public_view()["seats"][0]["alive"] is True
+    g.start_day()
+    assert g.public_view()["seats"][0]["alive"] is False
+    assert g.announcements[0] == "Dawn. Asha died in the night."
+
+
+def test_exorcised_demon_is_told_at_once_and_cannot_act():
+    g = make(["po", "assassin", "exorcist", "fool", "gossip", "tinker", "gambler"])
+    to_night(g)
+    g.resolve(step(g, "exorcist"), [p(g, "Asha").pid])
+    assert p(g, "Asha").prompt is None and "Exorcist" in p(g, "Asha").thread[-1]["text"]
+    with pytest.raises(GameError):
+        g.resolve(step(g, "po"), [p(g, "Dev").pid])
+
+
+def test_pukka_on_night_one_does_not_buzz_twice():
+    g = make(["pukka", "assassin", "sailor", "fool", "gossip", "tinker", "gambler"])
+    buzz = g.buzz
+    g.resolve(step(g, "pukka"), [p(g, "Chen").pid])
+    assert g.buzz == buzz and not g.second_round_done
+
+
+def test_assassin_kills_the_sailor():
+    g = make(["po", "assassin", "sailor", "gossip", "gambler", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "assassin"), [p(g, "Chen").pid])
+    assert not p(g, "Chen").alive
+
+
+def test_pukka_killing_the_grandchild_kills_the_grandmother():
+    g = make(["pukka", "assassin", "grandmother", "gossip", "gambler", "tinker", "tealady"])
+    g.resolve(step(g, "grandmother"), [])
+    child = g.get(g.script_state["grandchild"])
+    g.resolve(step(g, "pukka"), [child.pid])
+    to_night(g)
+    other = next(x for x in g.players if x.alive and x not in (child, p(g, "Asha"), p(g, "Chen")))
+    g.resolve(step(g, "pukka"), [other.pid])
+    assert not child.alive and not p(g, "Chen").alive
+
+
+def test_godfather_kill_step_is_done_after_resolving():
+    g = make(["po", "godfather", "sailor", "gossip", "tinker", "goon", "fool"])
+    to_night(g)
+    g.start_day()
+    g.kill(p(g, "Ema").pid)
+    g.end_day()
+    g.resolve(step(g, "godfather"), [p(g, "Dev").pid])
+    assert g.steps[step(g, "godfather")]["done"] is True
+
+
+def test_grandmother_only_learns_on_night_one():
+    g = make(["po", "assassin", "grandmother", "gossip", "gambler", "tinker", "tealady"])
+    to_night(g)
+    assert g.step_applies(g.steps[step(g, "grandmother")]) is False
+
+
+def test_chambermaid_ignores_storyteller_steps():
+    g = make(["po", "assassin", "chambermaid", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "tinker"), [], dies=False)
+    g.resolve(step(g, "chambermaid"), [p(g, "Finn").pid, p(g, "Dev").pid])   # the Tinker did not wake; the Sailor has not acted
+    assert g.steps[step(g, "chambermaid")]["suggestion"] == "0 of them woke tonight."
