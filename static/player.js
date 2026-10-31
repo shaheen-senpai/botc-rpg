@@ -220,7 +220,7 @@ function thread(me) {
   const body = items || `<p class="empty">Nothing from the Storyteller yet. What you learn at night arrives here.</p>`;
   return `<section class="messages">
     <div class="thread-head">${SEAL}<div><div class="who">Storyteller</div><div class="empty">Only you and the Storyteller see this.${revealed ? ` Hides in <span id="hide-in">${Math.max(0, Math.ceil((hideAt - Date.now()) / 1000))}</span> s.` : ""}</div></div></div>
-    ${revealed ? `<div class="thread">${body}</div>` : `<button class="masked" onclick="flip()"><div class="thread blur" aria-hidden="true">${body}</div><span class="tap">Tap to read</span></button>`}
+    ${revealed ? `<div class="thread">${body}</div>` : `<div class="masked"><div class="thread blur" aria-hidden="true" inert>${body}</div><button class="tap" onclick="flip()">Tap to read</button></div>`}
     <form class="composer" onsubmit="sendMessage(); return false">
       <input id="msg" placeholder="Message the Storyteller" maxlength="500" autocomplete="off" value="${esc(draft)}" oninput="setDraft(this.value)">
       <button type="submit" class="send" aria-label="Send" ${draft.trim() ? "" : "disabled"}>↑</button></form>

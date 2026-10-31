@@ -79,9 +79,9 @@
   .card.prompt p { margin: 0 0 0.5rem; }
   .card.done { border: 1px dashed var(--brass); color: var(--on-felt); font-size: var(--t-sm); display: flex; align-items: center; gap: 0.6rem; }
   .card.done svg { color: var(--brass-bright); flex: none; }
-  .masked { display: block; width: 100%; position: relative; border: 0; padding: 0; background: none; cursor: pointer; text-align: left; color: inherit; font: inherit; }
+  .masked { position: relative; }
   .masked .blur { filter: blur(7px); pointer-events: none; user-select: none; min-height: 6rem; }
-  .masked .tap { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--display); font-size: var(--t-xl); color: var(--accent-text); }
+  .masked .tap { position: absolute; inset: 0; width: 100%; border: 0; background: none; cursor: pointer; font-family: var(--display); font-size: var(--t-xl); color: var(--accent-text); }
   .composer { display: flex; gap: 0.5rem; padding-top: 0.6rem; border-top: 1px solid var(--felt-line); }
   .composer input { flex: 1; min-width: 0; min-height: 44px; padding: 0.5em 0.9em; border-radius: 999px; border: 1px solid var(--felt-line); background: var(--felt-deep); color: var(--on-felt); }
   .composer .send { width: 44px; height: 44px; border-radius: 50%; border: 0; background: linear-gradient(180deg, var(--brass-bright), var(--brass)); color: var(--ink); font-size: 1.3rem; font-weight: 700; cursor: pointer; }
