@@ -151,8 +151,9 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
 
     @app.get("/api/characters")
     def characters() -> dict:
+        # icon: whether static/icons/<id>.svg exists, so pages do not request masks that are not there
         with lock:
-            return game.script.CHARACTERS
+            return {cid: {**c, "icon": (STATIC / "icons" / f"{cid}.svg").exists()} for cid, c in game.script.CHARACTERS.items()}
 
     @app.get("/api/scripts")
     def script_list() -> list:

@@ -626,3 +626,11 @@ def test_protected_imp_cannot_star_pass():
     g.resolve(step(g, "imp"), [p(g, "Asha").pid])
     assert p(g, "Asha").alive and p(g, "Ben").character == "scarlet_woman"
     assert sum(x.character == "imp" for x in g.players) == 1
+
+
+def test_steps_record_whether_they_were_resolved_or_skipped():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.resolve(step(g, "poisoner"), [p(g, "Dev").pid])
+    g.finish_step(step(g, "empath"), True)
+    assert g.steps[step(g, "poisoner")]["resolved"] is True
+    assert g.steps[step(g, "empath")]["done"] and g.steps[step(g, "empath")]["resolved"] is False

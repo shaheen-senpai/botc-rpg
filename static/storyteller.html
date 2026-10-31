@@ -104,16 +104,27 @@
   .details p { margin: 0; font-size: var(--t-sm); line-height: 1.4; }
   .details .believed { padding-left: 0.6rem; border-left: 3px solid var(--poison); }
 
-  ol.order { list-style: none; counter-reset: step; padding: 0; margin: 0; }
-  ol.order > li { counter-increment: step; position: relative; padding: 0.55rem 0 0.55rem 2.4rem; border-top: 1px solid var(--parchment-dim); }
-  ol.order > li::before { content: counter(step); position: absolute; left: 0; top: 0.5rem; width: 1.7rem; height: 1.7rem; border-radius: 50%; display: grid; place-items: center; font-family: var(--display); background: var(--parchment-dim); }
-  ol.order > li.current::before { background: var(--brass); }
-  ol.order > li.done { color: var(--ink-soft); }
-  ol.order > li.done::before { content: "\2713"; font-family: var(--body); }
-  ol.order > li.skip { opacity: 0.45; }
-  .stephead { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; cursor: pointer; background: none; border: 0; padding: 0; width: 100%; text-align: left; }
-  .stephead b { font-family: var(--display); font-weight: 400; font-size: var(--t-lg); }
-  .stephead span { font-size: var(--t-sm); color: var(--ink-soft); }
+  ol.order { list-style: none; padding: 0; margin: 0; }
+  .step { position: relative; padding: 0.6rem 0 0.6rem 2.5rem; border-top: 1px solid var(--parchment-dim); }
+  .step.done, .step.skipped { color: var(--ink-soft); }
+  .step.open { background: rgba(255,255,255,.35); margin: 0 -0.75rem; padding: 0.75rem 0.75rem 0.9rem 3.25rem; border-radius: 10px; border-top: 0; }
+  .num { position: absolute; left: 0; top: 0.55rem; width: 1.75rem; height: 1.75rem; border-radius: 50%; display: grid; place-items: center; font-family: var(--display); font-weight: 700; background: var(--parchment-dim); color: var(--ink); }
+  .step.open .num { left: 0.75rem; top: 0.75rem; background: var(--brass); }
+  .num.done { color: var(--moss); }
+  .step .head { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; cursor: pointer; background: none; border: 0; padding: 0; width: 100%; text-align: left; font: inherit; color: inherit; }
+  .stitle { font-family: var(--display); font-weight: 500; font-size: var(--t-lg); }
+  .note.inline { display: inline; margin: 0; }
+  .note.red { color: var(--oxblood); }
+  .step .result { font-size: var(--t-sm); margin-top: 2px; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .pill { display: inline-block; font-size: var(--t-xs); font-weight: 700; padding: 1px 9px; border-radius: 999px; background: var(--lapis); color: var(--parchment); white-space: nowrap; }
+  .pill.wait { background: transparent; color: var(--oxblood); border: 1px dashed var(--oxblood); }
+  .pill.calm { background: var(--parchment-dim); color: var(--ink-soft); }
+  .question { font-weight: 700; margin: 0.4rem 0; }
+  .phones { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 1rem; }
+  .phone { padding: 1px 10px; border-radius: 999px; font-size: var(--t-xs); border: 1px solid var(--moss); color: var(--moss); }
+  .phone.wait { border: 1px dashed var(--oxblood); color: var(--oxblood); }
+  .death { margin: 2px 0; }
+  .death.linked { padding-left: 1rem; }
   .flag { display: inline-block; font-size: var(--t-xs); font-weight: 700; padding: 0 0.5rem; border-radius: 999px; background: var(--oxblood); color: var(--parchment); }
   .answer { font-weight: 700; }
 

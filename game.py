@@ -572,7 +572,8 @@ class Game:
             steps.append({"key": key, "kind": night["kind"], "pids": pids, "choose": choose,
                           "variable": bool(night.get("variable")), "question": night.get("question", ""),
                           "allow_self": night.get("allow_self", True), "prompt": night.get("prompt", ""),
-                          "choices": [], "answer": None, "suggestion": None, "sent": None, "done": False})
+                          "choices": [], "answer": None, "suggestion": None, "sent": None, "done": False,
+                          "resolved": False})   # resolved: applied or sent at least once (a done step without it was skipped)
         return steps
 
     def _step(self, index: int) -> dict:
@@ -628,6 +629,7 @@ class Game:
         if demon_step and self.phase == "night":
             self.second_round()
         s["choices"] = choices
+        s["resolved"] = True
         s["suggestion"] = self.script.suggest(self, s["key"], actor if len(s["pids"]) == 1 else None, targets)
         if s["suggestion"] is None:
             s["done"] = True
@@ -647,7 +649,7 @@ class Game:
             self._notify(pid, text.strip())
             self._close_prompt(self.get(pid), step)
         s["sent"] = text.strip()
-        s["done"] = True
+        s["done"] = s["resolved"] = True
         self._log(f"For {', '.join(self.get(pid).name for pid in s['pids'])} at dawn: {text.strip()}")
 
     def finish_step(self, step: int, done: bool = True) -> None:

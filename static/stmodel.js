@@ -99,6 +99,72 @@ export function drawerModel(p, v, C) {
   };
 }
 
+const MEETING_TITLES = {minion_info: "Minions meet the Demon", demon_info: "Demon meets the Minions"};
+
+// extra inputs a step's card needs beyond its player picks; kind: player | character | yesno
+const EXTRAS = {
+  imp: [{id: "redirect", label: "If the Mayor is attacked, kill instead", kind: "player", blank: "Nobody, the Mayor dies"},
+        {id: "new_demon", label: "If the Imp picks themselves, the new Imp is", kind: "player", blank: "Scarlet Woman first, else random"}],
+  innkeeper: [{id: "drunk", label: "Who is drunk until dusk", kind: "player", blank: "Their first pick"}],
+  sailor: [{id: "drunk", label: "Who is drunk until dusk", kind: "player", blank: "Their pick"}],
+  gambler: [{id: "guess", label: "Their guess", kind: "character"}],
+  shabaloth: [{id: "regurgitate", label: "Regurgitate (one of last night's victims)", kind: "player", blank: "Nobody"}],
+  gossip: [{id: "dies", label: "Who dies", kind: "player", blank: "Nobody"}],
+  courtier: [{id: "character", label: "Named character", kind: "character"}],
+  tinker: [{id: "dies", label: "Does the Tinker die tonight?", kind: "yesno"}],
+};
+
+export function stepTitle(s, C) {
+  return C[s.key]?.name ?? MEETING_TITLES[s.key] ?? s.key;
+}
+
+// the night ledger: one open card, done cards collapsed, sleeping steps listed apart, dawn summary
+export function nightCards(v, C, openStep) {
+  const name = pid => v.players.find(p => p.pid === pid)?.name ?? "";
+  const player = pid => v.players.find(p => p.pid === pid);
+  const steps = v.steps || [];
+  const openable = s => !s.done && s.applies;
+  const openIdx = openStep !== null && openStep !== undefined && steps[openStep] && openable(steps[openStep])
+    ? openStep : steps.findIndex(openable);
+  const cards = [], notTonight = [];
+  steps.forEach((s, i) => {
+    const who = s.pids.map(name).join(", ");
+    const title = stepTitle(s, C);
+    if (!s.applies && !s.done) {
+      const actor = player(s.pids[0]);
+      const why = actor && !actor.alive ? "dead" : (C[s.key]?.uses === "once_per_game" && actor?.ability?.used) ? "ability used" : "sleeps tonight";
+      notTonight.push({title, who, why});
+      return;
+    }
+    const resolved = !!(s.resolved || s.sent || s.choices.length);
+    const state = s.done ? (resolved ? "done" : "skipped") : i === openIdx ? "open" : "upcoming";
+    let pill, result = "";
+    if (s.done) {
+      pill = {text: resolved ? "Done" : "Skipped", cls: "calm"};
+      result = s.sent ? `Held for dawn: "${s.sent}"` : s.choices.length ? `Chose ${s.choices.map(name).join(" and ")}.` : resolved ? "Done." : "Skipped.";
+    } else if (s.kind === "choose") {
+      pill = s.answer ? {text: "Picked on their phone", cls: ""} : s.asked ? {text: "Waiting for their phone", cls: "wait"} : {text: "No phone: pick for them", cls: "calm"};
+    } else if (s.kind === "info") pill = {text: "Answer to work out", cls: ""};
+    else if (s.kind === "storyteller") pill = {text: "Your call", cls: ""};
+    else pill = {text: "Everyone awake", cls: ""};
+    const controls = {kind: s.kind, selects: s.choose, variable: !!s.variable, values: s.answer ?? s.choices,
+      askAgain: s.kind === "choose" && !!(s.asked || s.answer), allowSelf: s.allow_self, extras: EXTRAS[s.key] ?? [],
+      text: s.suggestion, impaired: !!s.impaired, question: s.question || "",
+      primary: s.kind === "storyteller" || (s.kind === "choose" && s.suggestion === null) ? "Apply"
+        : s.suggestion === null ? "Work out their info" : "Hold for dawn"};
+    cards.push({i, key: s.key, title, who, state, pill, hint: s.hint || "", result, controls});
+  });
+  const waiting = v.night_check && !v.waiting_stopped ? (v.phones || []).filter(x => !x.done).map(x => x.name) : [];
+  const phones = {show: !!v.night_check && (v.phones || []).length > 0, done: v.phones_done?.[0] ?? 0, total: v.phones_done?.[1] ?? 0, waiting, stopped: !!v.waiting_stopped};
+  const secondRound = {show: v.night > 1, done: !!v.second_round_done, blocked: waiting.length > 0};
+  const dawn = {
+    deaths: (v.dawn?.deaths ?? []).map(d => ({name: name(d.pid), cause: d.cause, linked: !!d.linked})),
+    pending: (v.dawn?.pending ?? []).map((d, index) => ({index, name: name(d.pid), why: d.why})),
+    held: v.dawn?.held ?? 0, waiting, blocked: waiting.length > 0,
+  };
+  return {cards, notTonight, phones, secondRound, dawn, openIdx};
+}
+
 export function lobbyModel(v) {
   const n = v.players.length;
   const canDeal = n >= 5 && n <= 15;

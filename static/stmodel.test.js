@@ -1,7 +1,58 @@
 // Pure model tests for the grimoire page. Run: node --test static/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel, nightCards } from "./stmodel.js";
+
+const NC = {
+  sailor: {name: "Sailor", uses: "each_night", hint: "h1"}, gossip: {name: "Gossip", uses: "day", hint: "h2"},
+  po: {name: "Po", uses: "each_night", hint: "h3"}, courtier: {name: "Courtier", uses: "once_per_game", hint: "h4"},
+  tinker: {name: "Tinker", uses: "passive", hint: "h5"},
+};
+const stepOf = (key, pid, extra = {}) => ({key, kind: "choose", pids: [pid], choose: 1, variable: false, question: "", allow_self: false,
+  prompt: "", choices: [], answer: null, suggestion: null, sent: null, done: false, applies: true, impaired: false, asked: true, hint: NC[key].hint, ...extra});
+const nightView = (steps, extra = {}) => ({
+  phase: "night", night: 2, day: 1, night_check: true, waiting_stopped: false, second_round_done: false,
+  players: [{pid: "p1", name: "Asha", character: "sailor", alive: true, ability: {uses: "each_night", used: false}},
+            {pid: "p2", name: "Ben", character: "gossip", alive: false, ability: {uses: "day", used: false}},
+            {pid: "p3", name: "Chen", character: "po", alive: true, ability: {uses: "each_night", used: false}},
+            {pid: "p4", name: "Dev", character: "courtier", alive: true, ability: {uses: "once_per_game", used: true}}],
+  phones: [{pid: "p1", name: "Asha", done: true}, {pid: "p3", name: "Chen", done: false}], phones_done: [1, 2],
+  steps, dawn: {deaths: [], pending: [], held: 0}, queued: {}, ...extra});
+
+test("nightCards opens the first undone applying step and collapses done ones", () => {
+  const v = nightView([stepOf("sailor", "p1", {done: true, choices: ["p3"]}), stepOf("gossip", "p2", {applies: false}), stepOf("po", "p3", {asked: true})]);
+  const n = nightCards(v, NC, null);
+  assert.deepEqual(n.cards.map(c => [c.i, c.state]), [[0, "done"], [2, "open"]]);
+  assert.equal(n.cards[0].result, "Chose Chen.");
+  assert.deepEqual(n.notTonight, [{title: "Gossip", who: "Ben", why: "dead"}]);
+  assert.equal(n.cards[1].pill.text, "Waiting for their phone");
+});
+
+test("nightCards keeps the open card's draft", () => {
+  const v = nightView([stepOf("sailor", "p1"), stepOf("po", "p3")]);
+  assert.deepEqual(nightCards(v, NC, 1).cards.map(c => c.state), ["upcoming", "open"]);
+  assert.deepEqual(nightCards(v, NC, null).cards.map(c => c.state), ["open", "upcoming"]);
+});
+
+test("nightCards explains why a step sleeps", () => {
+  const v = nightView([stepOf("courtier", "p4", {applies: false}), stepOf("tinker", "p1", {kind: "storyteller", choose: 0, applies: false})]);
+  assert.deepEqual(nightCards(v, NC, null).notTonight.map(x => x.why), ["ability used", "sleeps tonight"]);
+});
+
+test("nightCards dawn is blocked while phones wait, released by stop waiting or the check being off", () => {
+  const v = nightView([stepOf("po", "p3")]);
+  assert.equal(nightCards(v, NC, null).dawn.blocked, true);
+  assert.deepEqual(nightCards(v, NC, null).dawn.waiting, ["Chen"]);
+  assert.equal(nightCards({...v, waiting_stopped: true}, NC, null).dawn.blocked, false);
+  assert.equal(nightCards({...v, night_check: false, phones: [], phones_done: [0, 0]}, NC, null).phones.show, false);
+});
+
+test("nightCards gives the Po three selects and a nobody option", () => {
+  const v = nightView([stepOf("po", "p3", {choose: 3, variable: true})]);
+  const c = nightCards(v, NC, null).cards[0].controls;
+  assert.equal(c.selects, 3);
+  assert.equal(c.variable, true);
+});
 
 const CH = {
   slayer: {name: "Slayer", type: "townsfolk", ability: "Shoot once.", uses: "day", reminders: ["no ability"]},

@@ -1,7 +1,7 @@
 // The grimoire: polls /api/st, renders the top bar, the circle and the right column, posts actions.
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
-import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards } from "./stmodel.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
@@ -17,7 +17,7 @@ const voteDraft = {};         // nomination index -> Set of pids
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const cname = id => C[id]?.name ?? "";
-const glyph = id => id && C[id] ? `<span class="glyph" style="--icon:url(/static/icons/${id}.svg)"></span>` : "";
+const glyph = id => id && C[id]?.icon ? `<span class="glyph" style="--icon:url(/static/icons/${id}.svg)"></span>` : "";
 const team = id => ["minion", "demon"].includes(C[id]?.type) ? "evil" : "good";
 const tone = id => C[id]?.type === "outsider" ? "outsider" : team(id);
 const pname = pid => S.players.find(p => p.pid === pid)?.name ?? "";
@@ -393,47 +393,96 @@ function setup() {
       <button class="btn quiet" onclick="act('deal', {}, 'bluff-')">Deal again</button></div>`;
 }
 
-// Task 4 replaces this with the night ledger; until then: the old step list on the new engine
-function stepItem(s, i, cur) {
-  const title = S.steps[i].key in (C) ? cname(s.key) : (s.key === "minion_info" ? "Minions meet the Demon" : "Demon meets the Minions");
-  const who = s.pids.map(pname).join(", ");
-  const open = (openStep ?? cur) === i;
-  const state = s.done ? "done" : !s.applies ? "skip" : i === cur ? "current" : "";
-  let h = `<li class="${state}"><button class="stephead" onclick="ui.open(${open ? -1 : i})" aria-expanded="${open}">
-      <b>${esc(title)}</b><span>${esc(who)}${!s.applies && !s.done ? ", sleeps" : ""}</span></button>`;
-  if (!open) return h + `</li>`;
-  h += `<p class="note">${esc(s.hint || "")}</p>`;
-  if (s.sent) h += `<p class="note">Held for dawn: <span class="answer">${esc(s.sent)}</span></p>`;
-  if (s.impaired) h += `<p><span class="flag">Drunk or poisoned</span> <span class="note">Their information may be false.</span></p>`;
-  if (s.choose) {
-    const status = s.answer ? `Picked on their phone: <span class="answer">${s.answer.map(pname).join(" and ")}</span>` : s.asked ? "Waiting for their phone" : "";
-    h += `<div class="line"><span class="note">${status}</span>${s.asked || s.answer ? `<button class="btn quiet small" onclick="act('ask', {step:${i}})">Ask again</button>` : ""}</div>
-      <div class="line">${[...Array(s.choose).keys()].map(k => `<select id="c-${i}-${k}" aria-label="Pick ${k + 1}">${playerOpts(() => true, s.answer?.[k] ?? s.choices[k], "Pick a player")}</select>`).join("")}</div>`;
+// --- the night ledger ---
+
+function extraInput(i, x, s) {
+  const id = `x-${i}-${x.id}`;
+  if (x.kind === "player") return `<label class="field"><span>${esc(x.label)}</span><select id="${id}">${playerOpts(() => true, "", x.blank)}</select></label>`;
+  if (x.kind === "character") return `<label class="field"><span>${esc(x.label)}</span><select id="${id}">${charOpts("")}</select></label>`;
+  return "";   // yesno renders as two primary buttons
+}
+
+function extrasArgs(i, c) {
+  return c.extras.filter(x => x.kind !== "yesno").map(x => `, ${x.id}: val('x-${i}-${x.id}') || null`).join("");
+}
+
+function stepCard(c) {
+  const i = c.i;
+  const head = `<button class="head" onclick="ui.open(${c.state === "open" ? -1 : i})" aria-expanded="${c.state === "open"}">
+      <span><span class="stitle">${esc(c.title)}</span> <span class="note inline">· ${esc(c.who)}</span></span><span class="pill ${c.pill.cls}">${esc(c.pill.text)}</span></button>`;
+  const num = `<span class="num ${c.state}">${c.state === "done" ? "✓" : i + 1}</span>`;
+  if (c.state !== "open") {
+    const reopen = c.state === "done" || c.state === "skipped" ? `<button class="btn quiet small dim" onclick="act('finish_step', {step:${i}, done:false})">Reopen</button>` : "";
+    return `<li class="step ${c.state}">${num}${head}${c.result ? `<div class="result">${esc(c.result)} ${reopen}</div>` : ""}</li>`;
   }
-  const picks = `[${[...Array(s.choose).keys()].map(k => `val('c-${i}-${k}')`).join(",")}].filter(Boolean)`;
-  h += `<div class="line"><button class="btn small" onclick="act('resolve', {step:${i}, choices:${picks}}, 't-${i}')">${s.choose ? "Apply their pick" : "Work out their info"}</button>
-    <button class="btn quiet small" onclick="ui.open(null, false); act('finish_step', {step:${i}, done:${!s.done}})">${s.done ? "Reopen" : "Skip"}</button></div>`;
-  if (s.suggestion !== null) {
-    h += `<label class="field"><span>What they learn (edit if they are drunk, poisoned, or someone misregisters)</span><textarea id="t-${i}">${esc(s.suggestion)}</textarea></label>
-      <button class="btn small" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}')">Hold for ${esc(who)} until dawn</button>`;
+  const k = c.controls;
+  let body = `<p class="note">${esc(c.hint)}</p>`;
+  if (k.impaired) body += `<p><span class="flag">Drunk or poisoned</span> <span class="note inline">Their information may be false.</span></p>`;
+  let primary = "";
+  if (k.kind === "choose") {
+    const selects = [...Array(k.selects).keys()].map(n => `<select id="c-${i}-${n}" aria-label="Pick ${n + 1}">${playerOpts(() => true, k.values[n] ?? "", k.variable ? "Nobody" : "Pick a player")}</select>`).join("");
+    body += `<div class="line">${selects}${k.askAgain ? `<button class="btn quiet small" onclick="act('ask', {step:${i}})">Ask again</button>` : ""}</div>
+      ${k.variable ? `<p class="note">Nobody, one player, or three after a night of nobody.</p>` : ""}
+      ${k.extras.map(x => extraInput(i, x)).join("")}`;
+    const picks = `[${[...Array(k.selects).keys()].map(n => `val('c-${i}-${n}')`).join(",")}].filter(Boolean)`;
+    const apply = `act('resolve', {step:${i}, choices:${picks}${extrasArgs(i, k)}}, 'c-${i}')`;
+    if (k.text === null) primary = `<button class="btn small primary" onclick="${apply}">Apply</button>`;
+    else {
+      // the pick is applied and produced information: hold the (editable) text for dawn
+      body += `<label class="field"><span>What they learn (edit if someone is drunk, poisoned, or misregisters)</span><textarea id="t-${i}">${esc(k.text)}</textarea></label>`;
+      primary = `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}')">Hold for dawn</button>
+        <button class="btn quiet small" onclick="${apply}">Apply again</button>`;
+    }
+  } else if (k.kind === "storyteller") {
+    body += `<p class="question">${esc(k.question)}</p>${k.extras.filter(x => x.kind !== "yesno").map(x => extraInput(i, x)).join("")}`;
+    const yesno = k.extras.find(x => x.kind === "yesno");
+    primary = yesno
+      ? `<button class="btn small primary" onclick="ui.open(null, false); act('resolve', {step:${i}, choices:[], ${yesno.id}:true})">Yes</button>
+         <button class="btn quiet small" onclick="ui.open(null, false); act('resolve', {step:${i}, choices:[], ${yesno.id}:false})">No</button>`
+      : `<button class="btn small primary" onclick="ui.open(null, false); act('resolve', {step:${i}, choices:[]${extrasArgs(i, k)}})">${esc(k.primary)}</button>`;
+  } else {
+    // info and meetings: work it out, then hold the (editable) text for dawn
+    if (k.text !== null) body += `<label class="field"><span>What they learn (edit if someone is drunk, poisoned, or misregisters)</span><textarea id="t-${i}">${esc(k.text)}</textarea></label>`;
+    primary = k.text === null
+      ? `<button class="btn small primary" onclick="act('resolve', {step:${i}, choices:[]})">${esc(k.primary)}</button>`
+      : `<button class="btn small primary" onclick="ui.open(null, false); act('send', {step:${i}, text: val('t-${i}')}, 't-${i}')">${esc(k.primary)}</button>`;
   }
-  return h + `</li>`;
+  body += `<div class="line">${primary}<button class="btn quiet small" style="margin-left:auto" onclick="ui.open(null, false); act('finish_step', {step:${i}, done:true})">Skip</button></div>`;
+  return `<li class="step open">${num}${head}${body}</li>`;
 }
 
 function night() {
-  const cur = S.steps.findIndex(s => !s.done && s.applies);
-  const deaths = S.dawn.deaths.map(d => pname(d.pid));
-  const waiting = S.waiting_stopped ? [] : S.phones.filter(x => !x.done).map(x => x.name);
-  const blocked = waiting.length ? "disabled" : "";
-  const waitNote = waiting.length ? `<p class="note">Waiting for ${esc(waiting.join(", "))}.</p>` : "";
-  const round2 = S.night > 1 ? `<h3>Second round</h3>${S.second_round_done ? `<p class="note">Every phone has buzzed a second time.</p>` : `${waitNote}<button class="btn quiet small" ${blocked} onclick="act('second_round')">Buzz every phone now</button>`}` : "";
-  return `<h2>Night ${S.night}</h2>
-    <p class="lede">Work down the list as picks arrive.</p>
-    ${S.steps.length ? `<ol class="order">${S.steps.map((s, i) => stepItem(s, i, cur)).join("")}</ol>` : `<p class="note">Nobody has anything to do tonight.</p>`}
+  const n = nightCards(S, C, openStep);
+  const strip = n.phones.show ? `<div class="phones">${S.phones.map(x => `<span class="phone ${x.done || n.phones.stopped ? "" : "wait"}">${esc(x.name)}</span>`).join("")}</div>` : "";
+  const waitNote = n.dawn.waiting.length ? `<p class="note red">Waiting for ${esc(n.dawn.waiting.join(", "))}, or stop waiting in the top bar.</p>` : "";
+  const round2 = n.secondRound.show ? `<h3>Second round</h3>${n.secondRound.done ? `<p class="note">Every phone has buzzed a second time.</p>`
+      : `<p class="note">The Demon's kill buzzes every phone again; a step that only wakes after a death gets its prompt then.</p><button class="btn quiet small" ${n.secondRound.blocked ? "disabled" : ""} onclick="act('second_round')">Buzz every phone now</button>`}` : "";
+  const deaths = n.dawn.deaths.length ? n.dawn.deaths.map(d => `<p class="death ${d.linked ? "linked" : ""}"><b>${esc(d.name)}</b> <span class="note inline">${esc(d.cause)}</span></p>`).join("") : `<p class="note">Nobody has died yet tonight.</p>`;
+  const pending = n.dawn.pending.map(d => `<div class="line"><span><b>${esc(d.name)}</b> <span class="note inline">${esc(d.why)}</span></span>
+      <button class="btn small" onclick="act('confirm_death', {index:${d.index}, dies:true})">Dies</button><button class="btn quiet small" onclick="act('confirm_death', {index:${d.index}, dies:false})">Survives</button></div>`).join("");
+  return `${strip}<h2>Tonight, in order</h2>
+    <p class="lede">Only the open step needs you. Enter applies it, ↑ ↓ move, S skips.</p>
+    ${n.cards.length ? `<ol class="order">${n.cards.map(stepCard).join("")}</ol>` : `<p class="note">Nobody has anything to do tonight.</p>`}
+    ${n.notTonight.length ? `<p class="note">Not tonight: ${n.notTonight.map(x => `${esc(x.title)} (${esc(x.who)}, ${esc(x.why)})`).join(" · ")}</p>` : ""}
     ${round2}
-    <h3>Dawn</h3>
-    <p class="note">${deaths.length ? `${esc(deaths.join(" and "))} will be announced dead.` : "Nobody has died tonight."} ${S.dawn.held ? `${S.dawn.held} ${S.dawn.held === 1 ? "message is" : "messages are"} held for dawn.` : ""}</p>
-    ${waitNote}<button class="btn" ${blocked} onclick="ui.open(null, false); act('start_day')">Deliver everything and start day ${S.day + 1}</button>`;
+    <div class="card-accent"><h3>Dawn</h3>${deaths}${pending}
+      <p class="note">${n.dawn.held ? `${n.dawn.held} ${n.dawn.held === 1 ? "message is" : "messages are"} held for dawn; everyone else gets "Nothing to report".` : `Everyone without news gets "Nothing to report".`}</p>
+      ${waitNote}<button class="btn" ${n.dawn.blocked || n.dawn.pending.length ? "disabled" : ""} onclick="ui.open(null, false); act('start_day')">Deliver everything and start day ${S.day + 1}</button></div>`;
+}
+
+function nightKey(e) {
+  if (S?.phase !== "night" || view !== "ledger") return false;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return false;
+  const n = nightCards(S, C, openStep);
+  const idx = n.cards.findIndex(c => c.state === "open");
+  if (e.key === "Enter") { document.querySelector(".step.open .primary")?.click(); return true; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const next = n.cards[idx + (e.key === "ArrowDown" ? 1 : -1)];
+    if (next) ui.open(next.i);
+    return true;
+  }
+  if (e.key.toLowerCase() === "s" && idx >= 0) { act("finish_step", {step: n.cards[idx].i, done: true}); return true; }
+  return false;
 }
 
 function toggleVote(i, pid) {
@@ -502,6 +551,7 @@ document.addEventListener("input", e => { if (e.target.id) dirty[e.target.id] = 
 document.addEventListener("pointerdown", () => sound.unlock(), {once: true});
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && view !== "ledger") { closeDrawer(); return; }
+  if (nightKey(e)) { e.preventDefault(); return; }
   if (e.key.toLowerCase() !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return;
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) || !S?.undo) return;
   e.preventDefault();
