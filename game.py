@@ -152,10 +152,16 @@ class Game:
         """Whether p carries the reminder chip text (exact match)."""
         return any(r["text"] == text for r in p.reminders)
 
-    def mark(self, p: Player, text: str, until: str | None = None) -> None:
-        """Put a reminder chip on p (no duplicates); until is "night", "dawn" or None (stays)."""
+    def mark(self, p: Player, text: str, until: str | None = None, by: str | None = None) -> None:
+        """Put a reminder chip on p (no duplicates); until is "night", "dawn" or None (stays).
+
+        by names the character whose ability placed it, when the script needs to know (the Courtier).
+        """
         if not self.has(p, text):
-            p.reminders.append({"text": text, "until": until})
+            chip = {"text": text, "until": until}
+            if by:
+                chip["by"] = by
+            p.reminders.append(chip)
 
     def unmark(self, p: Player, text: str) -> None:
         """Remove the reminder chip text from p, if present."""
@@ -229,9 +235,11 @@ class Game:
         return math.ceil(sum(self._publicly_alive(p) for p in self.players) / 2)
 
     def impaired(self, p: Player) -> bool:
-        """True if the player's ability does not work: a Drunk-like character, or a poisoned / drunk chip."""
+        """True if the player's ability does not work: a Drunk-like character, or a poisoned / drunk chip
+        that is in force (the script may pause a chip, e.g. the Courtier's while the Courtier is drunk)."""
+        active = getattr(self.script, "chip_active", None)
         return p.character in self.script.IMPAIRED_CHARACTERS or any(
-            r["text"].split()[0] in ("poisoned", "drunk") for r in p.reminders)
+            r["text"].split()[0] in ("poisoned", "drunk") and (active is None or active(self, p, r)) for r in p.reminders)
 
     def _working(self, p: Player, character: str) -> bool:
         """True if p is alive, truly holds character, and is not poisoned."""
@@ -551,21 +559,28 @@ class Game:
                       "suggestion": str | None, "sent": str | None (text held for dawn), "done": bool}
         """
         steps = []
-        for key in self.script.FIRST_NIGHT if self.night == 1 else self.script.OTHER_NIGHTS:
+        order = self.script.FIRST_NIGHT if self.night == 1 else self.script.OTHER_NIGHTS
+        # a character that believes it is another (the Lunatic) but has its own place in the night order wakes there,
+        # acting as what it believes it is; one without its own place (the Drunk) wakes at the believed character's
+        own_place = {k for k in order if k in self.C and self.C[k].get("fake")}
+        for key in order:
             if key in self.script.MEETINGS:
                 if len(self.players) < self.script.EVIL_INFO_MIN_PLAYERS:
                     continue
                 wanted = MINION if key == "minion_info" else DEMON
                 pids = [p.pid for p in self.players if self._type_of(p) == wanted]
                 night = {"kind": "meeting"}
+            elif key in own_place:
+                pids = [p.pid for p in self.players if p.character == key and p.alive]
+                believed = self.get(pids[0]).believed if pids else None
+                night = self._night_spec(believed) if believed in order else ({"kind": "info"} if self.night == 1 else None)
             else:
                 # living only (a dead Imp still holds the token after a star-pass), except characters that act
                 # because they died (the Moonchild)
                 on_death = self.C[key]["uses"] == "on_death"
-                pids = [p.pid for p in self.players if p.believed == key and (p.alive or on_death)]
-                night = self.C[key]["night"]
-                if night and self.night == 1 and night.get("first"):
-                    night = night["first"]   # e.g. the Godfather learns the Outsiders on night 1 and kills later
+                pids = [p.pid for p in self.players if p.believed == key and p.character not in own_place
+                        and (p.alive or on_death)]
+                night = self._night_spec(key)
             if not pids or night is None:
                 continue
             choose = night["count"] if night["kind"] == "choose" else 0
@@ -573,8 +588,19 @@ class Game:
                           "variable": bool(night.get("variable")), "question": night.get("question", ""),
                           "allow_self": night.get("allow_self", True), "prompt": night.get("prompt", ""),
                           "choices": [], "answer": None, "suggestion": None, "sent": None, "done": False,
-                          "resolved": False})   # resolved: applied or sent at least once (a done step without it was skipped)
+                          # resolved: applied or sent at least once (a done step without it was skipped)
+                          "resolved": False,
+                          # wakes: the player wakes to use their ability (what the Chambermaid counts); meetings and
+                          # Storyteller-only steps (Tinker, Gossip) do not, unless the script says so (the Courtier)
+                          "wakes": night["kind"] in ("choose", "info") or bool(night.get("wakes"))})
         return steps
+
+    def _night_spec(self, key: str) -> dict | None:
+        """A character's night entry for tonight (the night-1 override where it has one)."""
+        night = self.C[key]["night"]
+        if night and self.night == 1 and night.get("first"):
+            night = night["first"]   # e.g. the Godfather learns the Outsiders on night 1 and kills later
+        return night
 
     def _step(self, index: int) -> dict:
         self._require("night")
@@ -624,7 +650,7 @@ class Game:
         if demon_step and not self.second_round_done:
             self._require_phones_done("the second buzz")
         self.script.apply(self, s, actor, targets, options)
-        if len(s["pids"]) == 1 and s["kind"] != "storyteller" and actor.pid not in self.woke_tonight:
+        if len(s["pids"]) == 1 and s["wakes"] and actor.pid not in self.woke_tonight:
             self.woke_tonight.append(actor.pid)
         if demon_step and self.phase == "night":
             self.second_round()
@@ -740,7 +766,7 @@ class Game:
         self._require("day")
         if self._vote_hand(p, up):
             return
-        if not p.alive:
+        if not self._publicly_alive(p):   # a Zombuul that registers as dead cannot nominate either
             raise GameError("Dead players cannot nominate")
         self.set_hand(p.pid, up)
 

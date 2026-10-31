@@ -58,7 +58,7 @@ CHARACTERS = {
                    "Every night except the first, choose a player, not the same as last night. If you chose the "
                    "Demon, the Demon learns who you are and does not act tonight.",
                    "each_night", "If they pick the Demon, the Demon learns who the Exorcist is and does not act tonight.",
-                   _choose(1, False, "Choose a player, different from last night."), ["chosen"]),
+                   _choose(1, True, "Choose a player, different from last night."), ["chosen"]),
     "innkeeper": _c("Innkeeper", TOWNSFOLK,
                     "Each night*, choose 2 players: they can't die tonight, but 1 is drunk until dusk.",
                     "Every night except the first, choose two players. Neither can die tonight, but one of them is "
@@ -74,20 +74,21 @@ CHARACTERS = {
                  "Each day, you may make a public statement. Tonight, if it was true, a player dies.",
                  "Each day you may make one public statement. That night, if the statement was true, a player of "
                  "the Storyteller's choice dies.",
-                 "day", "If today's statement was true, choose a player to die tonight.",
+                 "day", "If today's statement was true, choose a player to die tonight: one no ability protects (not the Fool, a Tea Lady's neighbour, an Innkeeper's pick).",
                  _ask("The Gossip's statement was true: who dies?"), ["dead"]),
     "courtier": _c("Courtier", TOWNSFOLK,
                    "Once per game, at night, choose a character: they are drunk for 3 nights & 3 days.",
                    "Once per game, at night, name a character. If it is in play, that player is drunk for three "
                    "nights and three days.",
                    "once_per_game", "They name a character. If it is in play, that player gets 'drunk 3', counting down at each dawn.",
-                   _ask("Which character does the Courtier name tonight?"), ["drunk 3", "drunk 2", "drunk 1", "no ability"]),
+                   {**_ask("Which character does the Courtier name tonight? (Leave it empty if they shake their head.)"), "wakes": True},
+                   ["drunk 3", "drunk 2", "drunk 1", "no ability"]),
     "professor": _c("Professor", TOWNSFOLK,
                     "Once per game, at night*, choose a dead player: if they are a Townsfolk, they are resurrected.",
                     "Once per game, at night except the first, choose a dead player. If they are a Townsfolk, they "
                     "come back to life.",
                     "once_per_game", "Only a dead Townsfolk comes back; the ability is spent either way.",
-                    _choose(1, False, "Choose a dead player to bring back."), ["alive", "no ability"]),
+                    _choose(1, False, "Choose a dead player to bring back, or nobody.", variable=True), ["alive", "no ability"]),
     "minstrel": _c("Minstrel", TOWNSFOLK,
                    "When a Minion dies by execution, all other players (except Travellers) are drunk until dusk tomorrow.",
                    "If a Minion is executed, every other player is drunk until dusk the next day.",
@@ -115,7 +116,8 @@ CHARACTERS = {
                   "You think you are a Demon, but you are not. The Demon knows who you are & who you choose at night.",
                   "You believe you are a Demon, but you are not. The real Demon knows who you are and whom you choose "
                   "each night.",
-                  "each_night", "Show the real Demon who the Lunatic attacked; nobody dies from it.", None,
+                  "each_night", "Wakes as the Demon they believe they are. Night 1: show fake Minions and bluffs. Their picks "
+                  "are told to the real Demon at once; nobody dies from them.", None,
                   ["attack 1", "attack 2", "attack 3"], fake=DEMON),
     "tinker": _c("Tinker", OUTSIDER,
                  "You might die at any time.",
@@ -145,7 +147,7 @@ CHARACTERS = {
                    "Once per game, at night except the first, choose a player. They die, even if something would "
                    "normally stop it.",
                    "once_per_game", "The kill ignores protection. Skip keeps the ability for another night.",
-                   _choose(1, False, "Choose a player to kill. This works once per game."), ["dead", "no ability"]),
+                   _choose(1, False, "Choose a player to kill, or nobody. This works once per game.", variable=True), ["dead", "no ability"]),
     "mastermind": _c("Mastermind", MINION,
                      "If the Demon dies by execution (ending the game), play for 1 more day. If a player is then executed, their team loses.",
                      "If the Demon is executed, the game goes on for one more day. If anyone is executed that day, "
@@ -241,6 +243,18 @@ def step_applies(game: Game, step: dict) -> bool | None:
 
 def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -> str | None:
     S = game.script_state
+    if key == "lunatic" and actor and game.night == 1:
+        # woken as the Demon they believe they are; at 7+ players, shown made-up Minions and three good bluffs
+        text = f"You are the {cname(actor.believed)}."
+        if len(game.players) >= EVIL_INFO_MIN_PLAYERS:
+            n = sum(CHARACTERS[q.character]["type"] == MINION for q in game.players)
+            fake = game.rng.sample([q for q in game.players if q is not actor], n)
+            held = {q.character for q in game.players} | {q.believed for q in game.players}
+            pool = [c for c in CHARACTERS if is_good(CHARACTERS, c) and c not in held]
+            bluffs = game.rng.sample(pool, 3)
+            text += (f" Your Minions are {', '.join(q.name for q in fake)}."
+                     f" These good characters are not in play (safe bluffs): {', '.join(cname(c) for c in bluffs)}.")
+        return text
     if key == "grandmother":
         if "grandchild" not in S:
             child = game.rng.choice([q for q in game.players if q is not actor and game.good(q)])
@@ -269,6 +283,16 @@ def _demon(game: Game) -> Player | None:
     return next((p for p in game.players if p.alive and CHARACTERS[p.character]["type"] == DEMON), None)
 
 
+def _pukka_kill(game: Game) -> None:
+    """Last night's Pukka victim dies while poisoned (so a Sailor or Fool has no ability), then is healthy."""
+    S = game.script_state
+    if S.get("pukka"):
+        victim = game.get(S.pop("pukka"))
+        game.mark(victim, "poisoned")   # a delayed kill (the Pukka was drunk) resumes poisoned
+        game._die(victim, "pukka")
+        game.unmark(victim, "poisoned")
+
+
 def _different_from_last_night(game: Game, key: str, target: Player) -> None:
     last = game.script_state.get(f"last_{key}")
     if last == target.pid:
@@ -292,23 +316,24 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
     key, S = step["key"], game.script_state
     _goon(game, actor, targets)
     if actor.character == "lunatic":
-        # the Lunatic acts as their believed Demon: nothing happens, the real Demon hears about it at dawn
+        # the Lunatic acts as their believed Demon: nothing happens; the real Demon is woken and told before it acts
         S["lunatic_picks"] = [t.name for t in targets]
         demon = _demon(game)
         if demon:
-            game._notify(demon.pid, f"The Lunatic ({actor.name}) attacked {' and '.join(t.name for t in targets) or 'nobody'}.")
+            told = [f"The Lunatic is {actor.name}."] if game.night == 1 else []
+            if targets or game.night > 1:
+                told.append(f"The Lunatic attacked {' and '.join(t.name for t in targets) or 'nobody'}.")
+            game._say(demon, " ".join(told))
         game._log(f"Lunatic {actor.name} attacks {', '.join(t.name for t in targets) or 'nobody'}: no effect")
         return
     if key in DEMONS and game.impaired(actor):
         game._log(f"{cname(key)} acts: no effect, the Demon is drunk or poisoned")
         if key == "pukka" and S.get("pukka"):
-            game.unmark(game.get(S.pop("pukka")), "poisoned")
+            # the poison pauses while the Pukka is drunk; it resumes and kills on the Pukka's next sober night
+            game.unmark(game.get(S["pukka"]), "poisoned")
         return
     if key == "pukka":
-        if S.get("pukka"):
-            victim = game.get(S.pop("pukka"))
-            game._die(victim, "pukka")       # dies while still poisoned (a poisoned Sailor can die)
-            game.unmark(victim, "poisoned")  # then becomes healthy
+        _pukka_kill(game)
         game.mark(targets[0], "poisoned")
         S["pukka"] = targets[0].pid
         game._log(f"Pukka poisons {targets[0].name}")
@@ -339,6 +364,8 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
             if targets[0].prompt and targets[0].prompt["kind"] == "choose":
                 targets[0].prompt = None
             game._log(f"Exorcist picks the Demon {targets[0].name}: the Demon sleeps tonight")
+            if targets[0].character == "pukka" and not game.impaired(targets[0]):
+                _pukka_kill(game)   # "a player still dies because of the Pukka's attack during the previous night"
     elif key == "innkeeper":
         drunk = options.get("drunk") or targets[0].pid
         for t in targets:
@@ -365,15 +392,20 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
             game._log(f"Gambler guesses {targets[0].name} is the {cname(guess)}: {'right' if guess == targets[0].character else 'no effect, drunk or poisoned'}")
     elif key == "courtier":
         character = options.get("character")
+        if not character:
+            game._log("Courtier shakes their head: ability kept")
+            return
         if character not in CHARACTERS:
-            raise game.error("The Courtier names a character")
+            raise game.error("Unknown character")
         actor.used = True
         holder = next((q for q in game.players if q.character == character and q.alive), None)
         if holder and not game.impaired(actor):
-            game.mark(holder, "drunk 3")
+            game.mark(holder, "drunk 3", by="courtier")
             game._log(f"Courtier names the {cname(character)}: {holder.name} is drunk for three nights and days")
         else:
             game._log(f"Courtier names the {cname(character)}: {'not in play' if not holder else 'no effect, drunk or poisoned'}")
+    elif key == "professor" and not targets:
+        game._log("Professor shakes their head: ability kept")
     elif key == "professor":
         actor.used = True
         t = targets[0]
@@ -383,6 +415,8 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
             game._log(f"Professor resurrects {t.name}")
         else:
             game._log(f"Professor picks {t.name}: nothing happens")
+    elif key == "assassin" and not targets:
+        game._log("Assassin shakes their head: ability kept")
     elif key == "assassin":
         actor.used = True
         if game.impaired(actor):
@@ -418,13 +452,15 @@ def _tea_lady_shields(game: Game, p: Player) -> bool:
     for t in game.players:
         if game._working(t, "tealady"):
             neighbours = living_neighbours(game, t)
-            if p in neighbours and all(game.is_good(n.character) for n in neighbours):
+            if p in neighbours and all(game.good(n) for n in neighbours):
                 return True
     return False
 
 
 def may_die(game: Game, p: Player, cause: str) -> bool | str:
     """The script's saves: Sailor, Tea Lady, Fool, Innkeeper, Devil's Advocate, Zombuul; the Pacifist asks."""
+    if cause == "assassin":
+        return True   # "they die, even if for some reason they could not" - the Zombuul's first death included
     if p.character == "zombuul" and not p.used:
         p.used = True
         game.mark(p, "registers dead")
@@ -434,8 +470,6 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
             game.died_today.append(p.pid)
         game._log(f"{p.name} registers as dead: the Zombuul's first death")
         return False
-    if cause == "assassin":
-        return True   # "they die, even if for some reason they could not"
     if p.character == "sailor" and not game.impaired(p):
         game._log(f"{p.name} cannot die: a sober Sailor")
         return False
@@ -452,7 +486,7 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
     if cause == "executed" and game.has(p, "survives execution"):
         game._log(f"{p.name} survives execution: the Devil's Advocate")
         return False
-    if cause == "executed" and game.is_good(p.character) and any(game._working(q, "pacifist") for q in game.players):
+    if cause == "executed" and game.good(p) and any(game._working(q, "pacifist") for q in game.players):
         return "ask: the Pacifist is in play; does the executed good player die?"
     return True
 
@@ -474,9 +508,17 @@ def on_execution(game: Game, p: Player) -> None:
     """A Minion executed with a working Minstrel in play: everyone else is drunk until dusk tomorrow."""
     if CHARACTERS[p.character]["type"] == MINION and any(game._working(q, "minstrel") for q in game.players):
         for q in game.players:
-            if q is not p and q.alive and q.character != "minstrel":
+            if q.character != "minstrel":
                 game.mark(q, "drunk 2")
         game._log("A Minion was executed: the Minstrel makes everyone else drunk until tomorrow's dusk")
+
+
+def chip_active(game: Game, p: Player, chip: dict) -> bool:
+    """The Courtier's drunkenness only holds while the Courtier is alive and sober."""
+    if chip.get("by") != "courtier" or p.character == "courtier":
+        return True
+    courtier = next((q for q in game.players if q.character == "courtier"), None)
+    return bool(courtier and courtier.alive and not game.impaired(courtier))
 
 
 def on_nomination(game: Game, nominator: Player, nominee: Player, options: dict) -> None:
@@ -513,7 +555,7 @@ def _count_down_drunk(game: Game) -> None:
                 left = int(r["text"].split()[1]) - 1
                 game.unmark(q, r["text"])
                 if left > 0:
-                    game.mark(q, f"drunk {left}")
+                    game.mark(q, f"drunk {left}", by=r.get("by"))
 
 
 def day_end(game: Game) -> None:

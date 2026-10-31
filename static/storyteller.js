@@ -456,7 +456,7 @@ function setup() {
 function extraInput(i, x, s) {
   const id = `x-${i}-${x.id}`;
   if (x.kind === "player") return `<label class="field"><span>${esc(x.label)}</span><select id="${id}">${playerOpts(() => true, "", x.blank)}</select></label>`;
-  if (x.kind === "character") return `<label class="field"><span>${esc(x.label)}</span><select id="${id}">${charOpts("")}</select></label>`;
+  if (x.kind === "character") return `<label class="field"><span>${esc(x.label)}</span><select id="${id}">${x.blank ? `<option value="">${esc(x.blank)}</option>` : ""}${charOpts("")}</select></label>`;
   return "";   // yesno renders as two primary buttons
 }
 
@@ -480,7 +480,7 @@ function stepCard(c) {
   if (k.kind === "choose") {
     const selects = [...Array(k.selects).keys()].map(n => `<select id="c-${i}-${n}" aria-label="Pick ${n + 1}">${playerOpts(() => true, k.values[n] ?? "", k.variable ? "Nobody" : "Pick a player")}</select>`).join("");
     body += `<div class="line">${selects}${k.askAgain ? `<button class="btn quiet small" onclick="act('ask', {step:${i}})">Ask again</button>` : ""}</div>
-      ${k.variable ? `<p class="note">Nobody, one player, or three after a night of nobody.</p>` : ""}
+      ${k.variable ? `<p class="note">${c.key === "po" ? "Nobody, one player, or three after a night of nobody." : "They may choose nobody: leave it on Nobody."}</p>` : ""}
       ${k.extras.map(x => extraInput(i, x)).join("")}`;
     const picks = `[${[...Array(k.selects).keys()].map(n => `val('c-${i}-${n}')`).join(",")}].filter(Boolean)`;
     const apply = `act('resolve', {step:${i}, choices:${picks}${extrasArgs(i, k)}}, 'c-${i}-').then(() => Object.keys(dirty).filter(x => x.startsWith('x-${i}-')).forEach(x => delete dirty[x]))`;

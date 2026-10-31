@@ -221,3 +221,16 @@ test("seatPositions puts seat 1 at the top", () => {
   assert.equal(s[0].top, "9.0%");
   assert.equal(s[2].left, "91.0%");
 });
+
+test("dayModel dusk names today's execution (a Virgin's nominator) instead of counting votes", () => {
+  const v = dv({clock: null, nominations_full: [{nominator: "p3", nominee: "p1", voters: [], votes: null, clock: null}], executed_today: "p3"});
+  const m = dayModel(v, DC);
+  assert.equal(m.dusk.text, "Chen was executed today. Ending the day starts the night.");
+});
+
+test("nightCards lets the Courtier name nobody", () => {
+  const v = nightView([stepOf("courtier", "p4", {kind: "storyteller", choose: 0, question: "Which character?"})]);
+  v.players[3].ability.used = false;
+  const c = nightCards(v, NC, null).cards[0].controls;
+  assert.equal(c.extras[0].blank, "Nobody: they shake their head");
+});

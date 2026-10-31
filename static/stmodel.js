@@ -110,7 +110,7 @@ const EXTRAS = {
   gambler: [{id: "guess", label: "Their guess", kind: "character"}],
   shabaloth: [{id: "regurgitate", label: "Regurgitate (one of last night's victims)", kind: "player", blank: "Nobody"}],
   gossip: [{id: "dies", label: "Who dies", kind: "player", blank: "Nobody"}],
-  courtier: [{id: "character", label: "Named character", kind: "character"}],
+  courtier: [{id: "character", label: "Named character", kind: "character", blank: "Nobody: they shake their head"}],
   tinker: [{id: "dies", label: "Does the Tinker die tonight?", kind: "yesno"}],
 };
 
@@ -203,6 +203,8 @@ export function dayModel(v, C) {
   let text = `Nobody has reached ${v.threshold} votes yet. Ending the day with no execution starts the night.`;
   if (leaders.length === 1) text = `${name((v.nominations_full[leaders[0].i]).nominee)} is set to be executed with ${top} votes.`;
   else if (leaders.length > 1) text = `Tied at ${top} votes: nobody is executed.`;
+  // an execution already happened today (the Virgin's nominator): no more votes count
+  if (v.executed_today) text = `${name(v.executed_today)} was executed today. Ending the day starts the night.`;
   const pending = (v.pending_deaths || []).map((d, index) => ({index, name: name(d.pid), why: d.why}));
   return {
     announcements: v.announcements || [],

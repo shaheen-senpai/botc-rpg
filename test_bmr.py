@@ -171,10 +171,12 @@ def test_shabaloth_regurgitates():
 def test_lunatic_attacks_are_shown_to_the_demon_and_kill_nobody():
     g = make(["po", "assassin", "lunatic", "fool", "gossip", "tinker", "gambler"], believed={"lunatic": "shabaloth"})
     to_night(g)
-    g.resolve(step(g, "shabaloth"), [p(g, "Dev").pid, p(g, "Ema").pid])
+    keys = [s["key"] for s in g.steps]
+    assert keys.index("lunatic") < keys.index("po")            # the Lunatic wakes at their own place, before the Demon
+    assert g.steps[step(g, "lunatic")]["choose"] == 2           # ...with the believed Shabaloth's two picks
+    g.resolve(step(g, "lunatic"), [p(g, "Dev").pid, p(g, "Ema").pid])
     assert p(g, "Dev").alive and p(g, "Ema").alive
-    g.resolve(step(g, "po"), [])
-    g.start_day()
+    # the real Demon learns the picks before it acts, not at dawn
     assert "Lunatic" in p(g, "Asha").thread[-1]["text"] and "Dev" in p(g, "Asha").thread[-1]["text"]
 
 
@@ -445,3 +447,129 @@ def test_mastermind_extra_day_is_in_the_views():
     execute(g, "Chen", "Asha")
     g.start_day()
     assert g.public_view()["extra_day"] == 2 and g.storyteller_view()["extra_day"] == 2
+
+
+
+# --- rulings checked against the official wiki ---
+
+def test_lunatic_first_night_sees_fake_evil_info_and_the_demon_learns_who_they_are():
+    g = make(["po", "assassin", "lunatic", "fool", "gossip", "tinker", "gambler"], believed={"lunatic": "shabaloth"})
+    i = step(g, "lunatic")
+    assert g.steps[i]["kind"] == "info"
+    g.resolve(i, [])
+    text = g.steps[i]["suggestion"]
+    assert text.startswith("You are the Shabaloth.") and "Minions" in text and "bluffs" in text
+    assert "The Lunatic is Chen." in p(g, "Asha").thread[-1]["text"]
+
+
+def test_assassin_kills_a_zombuul_outright():
+    g = make(["zombuul", "assassin", "sailor", "gossip", "gambler", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "assassin"), [p(g, "Asha").pid])
+    assert not p(g, "Asha").alive and g.winner == "good"
+
+
+def test_exorcised_pukka_still_kills_last_nights_victim():
+    g = make(["pukka", "assassin", "exorcist", "gossip", "gambler", "tinker", "fool"])
+    g.resolve(step(g, "pukka"), [p(g, "Dev").pid])
+    to_night(g)
+    g.resolve(step(g, "exorcist"), [p(g, "Asha").pid])
+    assert not p(g, "Dev").alive
+    assert [d["pid"] for d in g.night_deaths] == [p(g, "Dev").pid]
+    assert not any(g.has(x, "poisoned") for x in g.players)
+
+
+def test_drunk_pukka_delays_the_kill_until_sober():
+    g = make(["pukka", "assassin", "sailor", "gossip", "gambler", "tinker", "fool"])
+    g.resolve(step(g, "pukka"), [p(g, "Dev").pid])
+    to_night(g)
+    g.mark(p(g, "Asha"), "drunk", "night")
+    g.resolve(step(g, "pukka"), [p(g, "Ema").pid])
+    assert p(g, "Dev").alive and not g.has(p(g, "Ema"), "poisoned")
+    to_night(g)
+    g.resolve(step(g, "pukka"), [p(g, "Ema").pid])
+    assert not p(g, "Dev").alive and g.has(p(g, "Ema"), "poisoned")
+
+
+def test_pukka_kills_a_fool_without_spending_the_first_death():
+    g = make(["pukka", "assassin", "sailor", "fool", "gambler", "tinker", "gossip"])
+    g.resolve(step(g, "pukka"), [p(g, "Dev").pid])
+    to_night(g)
+    g.resolve(step(g, "pukka"), [p(g, "Ema").pid])
+    assert not p(g, "Dev").alive
+
+
+def test_exorcist_may_choose_themselves():
+    g = make(["po", "assassin", "exorcist", "fool", "gossip", "tinker", "gambler"])
+    to_night(g)
+    g.resolve(step(g, "exorcist"), [p(g, "Chen").pid])
+    assert g.steps[step(g, "exorcist")]["done"]
+
+
+def test_tea_lady_and_pacifist_follow_the_goons_new_team():
+    # Dev is the Tea Lady; her neighbours are Chen (the Goon) and Ema (the Gambler)
+    g = make(["po", "assassin", "goon", "tealady", "gambler", "pacifist", "fool"])
+    to_night(g)
+    g.resolve(step(g, "po"), [p(g, "Chen").pid])     # the Po picks the Goon first: Po drunk, Goon evil
+    assert p(g, "Chen").alive and not g.good(p(g, "Chen"))
+    g.kill(p(g, "Ema").pid)
+    assert not p(g, "Ema").alive                      # one neighbour is now evil: no Tea Lady protection
+    g.start_day()
+    g.nominate(p(g, "Asha").pid, p(g, "Chen").pid)
+    g.record_votes(0, [x.pid for x in g.players if x.alive][:4])
+    g.end_day()
+    assert not p(g, "Chen").alive and not g.pending_deaths   # an evil Goon is not "a good player" for the Pacifist
+
+
+def test_minstrel_makes_the_dead_drunk_too():
+    g = make(["po", "assassin", "minstrel", "sailor", "gossip", "tinker", "fool"])
+    g.start_day()
+    g.kill(p(g, "Ema").pid)
+    execute(g, "Chen", "Ben")
+    assert g.impaired(p(g, "Ema")) and not g.impaired(p(g, "Chen"))
+
+
+def test_shabaloth_can_regurgitate_an_already_dead_target():
+    g = make(["shabaloth", "assassin", "sailor", "gossip", "tinker", "gambler", "fool"])
+    to_night(g)
+    g.kill(p(g, "Ema").pid)
+    g.resolve(step(g, "shabaloth"), [p(g, "Ema").pid, p(g, "Finn").pid])
+    to_night(g)
+    g.resolve(step(g, "shabaloth"), [p(g, "Dev").pid, p(g, "Finn").pid], regurgitate=p(g, "Ema").pid)
+    assert p(g, "Ema").alive
+
+
+def test_courtier_drunkenness_pauses_while_the_courtier_is_poisoned():
+    g = make(["po", "assassin", "courtier", "sailor", "gossip", "tinker", "fool"])
+    g.resolve(step(g, "courtier"), [], character="sailor")
+    assert g.impaired(p(g, "Dev"))
+    g.mark(p(g, "Chen"), "poisoned")
+    assert not g.impaired(p(g, "Dev"))
+    g.unmark(p(g, "Chen"), "poisoned")
+    assert g.impaired(p(g, "Dev"))
+
+
+def test_declined_once_per_game_wakes_count_for_the_chambermaid_and_keep_the_ability():
+    g = make(["po", "assassin", "chambermaid", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.choose(p(g, "Ben").token, [])                    # the Assassin wakes and shakes their head
+    g.resolve(step(g, "assassin"), [])
+    assert not p(g, "Ben").used
+    g.resolve(step(g, "chambermaid"), [p(g, "Ben").pid, p(g, "Ema").pid])
+    assert g.steps[step(g, "chambermaid")]["suggestion"] == "1 of them woke tonight."
+
+
+def test_minion_and_demon_introductions_do_not_count_as_waking():
+    g = make(["po", "mastermind", "chambermaid", "sailor", "gossip", "tinker", "fool"])
+    g.resolve(step(g, "minion_info"), [])
+    g.resolve(step(g, "chambermaid"), [p(g, "Ben").pid, p(g, "Ema").pid])
+    assert g.steps[step(g, "chambermaid")]["suggestion"] == "0 of them woke tonight."
+
+
+def test_a_zombuul_registered_dead_cannot_raise_a_hand_to_nominate():
+    g = make(["zombuul", "assassin", "sailor", "gossip", "gambler"])
+    g.start_day()
+    execute(g, "Ben", "Asha")
+    g.start_day()
+    with pytest.raises(GameError, match="Dead players cannot nominate"):
+        g.raise_hand(p(g, "Asha").token, True)

@@ -196,7 +196,6 @@ function character(me) {
 function chooseCard(card) {
   return `<div class="card prompt"><span class="when">The Storyteller asks</span><p>${esc(card.text)}</p>
     <div class="picks">${card.options.map(o => `<button class="pick ${o.dead ? "dead" : ""}" aria-pressed="${picks.includes(o.pid)}" onclick="togglePick('${o.pid}', ${card.count})">${esc(o.name)}</button>`).join("")}</div>
-    ${card.variable ? `<p class="empty">Pick nobody, one, or three.</p>` : ""}
     <button class="btn" ${picks.length === card.count || (card.variable && picks.length <= card.count) ? "" : "disabled"} onclick="confirmPick()">Confirm choice</button></div>`;
 }
 
