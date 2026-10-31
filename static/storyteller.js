@@ -2,10 +2,13 @@
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
 import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel } from "./stmodel.js";
+import { handAngle, handIndex, serverNow } from "./clockmath.js";
 import { sound } from "./sound.js";
 
 const KEY = new URLSearchParams(location.search).get("key") || "";
 let S = null, C = {}, SCRIPTS = [], lastVersion = -1, toastTimer = null;
+let receivedAt = 0;           // Date.now() when S arrived, to follow the server's clock between polls
+let lastHandIdx = null;       // last hand index the dial drew, for the tick sound
 let selected = null;          // pid whose drawer is open
 let openStep = null;          // night ledger card the Storyteller opened by hand
 let mode = "none";            // "none" | "nominator" | "nominee": clicking tokens picks a nomination
@@ -43,6 +46,7 @@ async function act(action, body = {}, clearPrefix = null) {
   try {
     const before = S?.script?.id;
     S = await api(`/api/st/${action}?key=${encodeURIComponent(KEY)}`, body);
+    receivedAt = Date.now();
     if (clearPrefix) Object.keys(dirty).filter(k => k.startsWith(clearPrefix)).forEach(k => delete dirty[k]);
     lastVersion = S.version;
     if (S.script.id !== before) C = await api("/api/characters");
@@ -54,7 +58,9 @@ async function act(action, body = {}, clearPrefix = null) {
 async function poll() {
   try {
     const s = await api(`/api/st?key=${encodeURIComponent(KEY)}`);
+    receivedAt = Date.now();
     if (s.version !== lastVersion) { S = s; lastVersion = s.version; render(); }
+    else S.server_time = s.server_time;
   } catch (e) { toast(e.message); }
 }
 
@@ -146,7 +152,48 @@ function square() {
   return spots + `<div class="center" id="center">${centre()}</div>`;
 }
 
+// a clock worth drawing: live, or finished less than ten seconds ago
+function dialClock() {
+  const c = S.clock;
+  if (!c || S.phase !== "day") return null;
+  if (c.state === "done" && !S.nominations_full[c.nomination]?.clock) return null;
+  return c;
+}
+
+function dial(c) {
+  const seats = S.players.map(p => p.pid);
+  const now = serverNow(S, receivedAt);
+  const idx = handIndex(c, now);
+  const n = S.players.length;
+  const yes = Object.values(c.locked).filter(Boolean).length;
+  return `<div class="dial" aria-hidden="true"><div class="hand" id="hand" style="transform: rotate(${handAngle(seats, c, now)}deg)"></div><div class="boss"></div>
+      <div class="count" id="count">${idx < 0 ? Math.min(3, Math.ceil(-idx * c.seat_seconds / 1)) || "" : ""}</div></div>
+    <div class="dial-text"><h2 class="small">${esc(pname(c.nominator))} nominates ${esc(pname(c.nominee))}</h2>
+      <p>${c.state === "done" ? `${yes} ${yes === 1 ? "vote" : "votes"} · ${S.threshold} to execute` : `${yes} so far · ${S.threshold} to execute`}</p>
+      <p class="tiny">${c.seat_seconds} s a seat · Space ${c.state === "paused" ? "resumes" : "pauses"}${c.state === "paused" ? " · paused" : ""}</p></div>`;
+}
+
+// between polls: move the hand and the countdown on the server's clock; sound at go and at each seat
+function tickDial() {
+  const c = dialClock();
+  const hand = el("hand");
+  if (!c || !hand) { lastHandIdx = null; return; }
+  const now = serverNow(S, receivedAt);
+  const seats = S.players.map(p => p.pid);
+  hand.style.transform = `rotate(${handAngle(seats, c, now)}deg)`;
+  const idx = c.state === "paused" ? lastHandIdx : handIndex(c, now);
+  const count = el("count");
+  if (count) count.textContent = idx < 0 ? String(Math.min(3, Math.ceil((c.go_at - now)))) : "";
+  if (lastHandIdx !== null && idx !== null && idx > lastHandIdx && c.state !== "done") {
+    if (lastHandIdx < 0 && idx >= 0) sound.chime();
+    else if (idx <= seats.length) sound.tick();
+  }
+  lastHandIdx = idx;
+}
+
 function centre() {
+  const c = dialClock();
+  if (c) return dial(c);
   if (S.phase === "lobby") {
     return `<img class="qr" src="/qr.svg" alt="QR code to join"><div class="url">${esc(S.join_url)}</div>
       <p>${S.players.length ? `${S.players.length} seated. Drag a token onto another seat to move it there.` : "Scan to take a seat, or send the link."}</p>`;
@@ -577,8 +624,18 @@ Object.assign(window, {act, pick, closeDrawer, showMessages, changeScript, choos
 
 document.addEventListener("input", e => { if (e.target.id) dirty[e.target.id] = e.target.type === "checkbox" ? e.target.checked : e.target.value; });
 document.addEventListener("pointerdown", () => sound.unlock(), {once: true});
+function spaceKey() {
+  if (S?.phase !== "day" || ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return false;
+  const c = S.clock && S.clock.state !== "done" ? S.clock : null;
+  if (c) { act(c.state === "paused" ? "resume_clock" : "pause_clock"); return true; }
+  const idle = S.nominations_full.findIndex(n => n.votes === null && !n.clock);
+  if (idle >= 0) { act("start_clock", {nomination: idle, seat_seconds: seatSeconds()}); return true; }
+  return false;
+}
+
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && view !== "ledger") { closeDrawer(); return; }
+  if (e.key === " " && spaceKey()) { e.preventDefault(); return; }
   if (nightKey(e)) { e.preventDefault(); return; }
   if (e.key.toLowerCase() !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey) return;
   if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName) || !S?.undo) return;
@@ -591,3 +648,4 @@ installDrag();
 api("/api/scripts").then(s => { SCRIPTS = s; });
 api("/api/characters").then(c => { C = c; lastVersion = -1; poll(); });
 setInterval(poll, 1200);
+setInterval(tickDial, 100);
