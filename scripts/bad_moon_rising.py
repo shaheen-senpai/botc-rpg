@@ -218,21 +218,83 @@ def deal_extras(characters: dict[str, str], rng: random.Random) -> dict:
 
 # --- night ---
 
+DEMONS = ("zombuul", "pukka", "shabaloth", "po")
+
+
 def step_applies(game: Game, step: dict) -> bool | None:
+    actor = game.get(step["pids"][0])
     if step["key"] == "zombuul" and game.died_today:
+        return False
+    if step["key"] in DEMONS and actor.character != "lunatic" and game.has(actor, "exorcised"):
         return False
     return None
 
 
+def _demon(game: Game) -> Player | None:
+    return next((p for p in game.players if p.alive and CHARACTERS[p.character]["type"] == DEMON), None)
+
+
+def _different_from_last_night(game: Game, key: str, target: Player) -> None:
+    last = game.script_state.get(f"last_{key}")
+    if last == target.pid:
+        raise game.error(f"The {cname(key)} must choose someone different from last night")
+    game.script_state[f"last_{key}"] = target.pid
+
+
 def apply(game: Game, step: dict, actor: Player, targets: list[Player], options: dict) -> None:
     """State effects of a choose step."""
-    key = step["key"]
-    if key in ("po", "shabaloth", "zombuul"):
-        if game.impaired(actor):
-            game._log(f"{cname(key)} attacks: no effect, the Demon is drunk or poisoned")
-            return
+    key, S = step["key"], game.script_state
+    if actor.character == "lunatic":
+        # the Lunatic acts as their believed Demon: nothing happens, the real Demon hears about it at dawn
+        S["lunatic_picks"] = [t.name for t in targets]
+        demon = _demon(game)
+        if demon:
+            game._notify(demon.pid, f"The Lunatic ({actor.name}) attacked {' and '.join(t.name for t in targets) or 'nobody'}.")
+        game._log(f"Lunatic {actor.name} attacks {', '.join(t.name for t in targets) or 'nobody'}: no effect")
+        return
+    if key in DEMONS and game.impaired(actor):
+        game._log(f"{cname(key)} acts: no effect, the Demon is drunk or poisoned")
+        if key == "pukka" and S.get("pukka"):
+            game.unmark(game.get(S.pop("pukka")), "poisoned")
+        return
+    if key == "pukka":
+        if S.get("pukka"):
+            victim = game.get(S.pop("pukka"))
+            game._die(victim, "pukka")       # dies while still poisoned (a poisoned Sailor can die)
+            game.unmark(victim, "poisoned")  # then becomes healthy
+        game.mark(targets[0], "poisoned")
+        S["pukka"] = targets[0].pid
+        game._log(f"Pukka poisons {targets[0].name}")
+    elif key == "po":
+        if S.get("po_nobody") and len(targets) != 3:
+            raise game.error("The Po chose nobody last night: choose three players tonight")
+        if not S.get("po_nobody") and len(targets) > 1:
+            raise game.error("The Po chooses one player, or nobody")
+        S["po_nobody"] = not targets
         for t in targets:
             game._die(t, "demon")
+    elif key == "shabaloth":
+        back = options.get("regurgitate")
+        if back and back in S.get("shabaloth_victims", []) and not game.get(back).alive:
+            game.revive(back)
+            game._log(f"Shabaloth regurgitates {game.get(back).name}")
+        S["shabaloth_victims"] = [t.pid for t in targets]
+        for t in targets:
+            game._die(t, "demon")
+    elif key == "zombuul":
+        game._die(targets[0], "demon")
+    elif key == "exorcist":
+        _different_from_last_night(game, key, targets[0])
+        if not game.impaired(actor) and CHARACTERS[targets[0].character]["type"] == DEMON:
+            game.mark(targets[0], "exorcised", "dawn")
+            game._notify(targets[0].pid, f"The Exorcist is {actor.name}. You do not act tonight.")
+            game._log(f"Exorcist picks the Demon {targets[0].name}: the Demon sleeps tonight")
+    elif key == "innkeeper":
+        drunk = options.get("drunk") or targets[0].pid
+        for t in targets:
+            game.mark(t, "protected", "dawn")
+        game.mark(game.get(drunk), "drunk", "night")
+        game._log(f"Innkeeper protects {' and '.join(t.name for t in targets)}; {game.get(drunk).name} is drunk")
 
 
 def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -> str | None:

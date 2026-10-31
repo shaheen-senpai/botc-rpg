@@ -96,6 +96,8 @@ class Game:
         self.night_deaths: list[str] = []
         # pids that died (or registered as dead) during the current day; some characters act only when it is empty
         self.died_today: list[str] = []
+        # the script's own bookkeeping (last picks, the Po's empty night...); undo restores it with the rest
+        self.script_state: dict = {}
         # deaths the script wants the Storyteller to decide: [{"pid", "cause", "why"}]
         self.pending_deaths: list[dict] = []
         self.steps: list[dict] = []

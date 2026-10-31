@@ -115,3 +115,65 @@ def test_zombuul_registers_dead_then_acts_after_a_quiet_day():
     g.start_day()
     g.end_day()                                   # nobody dies on day 2: night 3
     assert g.step_applies(g.steps[step(g, "zombuul")]) is True
+
+
+# --- demons, Exorcist, Lunatic ---
+
+def test_pukka_poisons_then_kills_next_night():
+    g = make(["pukka", "assassin", "sailor", "fool", "gossip", "tinker", "gambler"])
+    g.resolve(step(g, "pukka"), [p(g, "Chen").pid])
+    assert g.impaired(p(g, "Chen"))
+    to_night(g)
+    g.resolve(step(g, "pukka"), [p(g, "Dev").pid])
+    assert not p(g, "Chen").alive and not g.impaired(p(g, "Chen")) and g.impaired(p(g, "Dev"))
+
+
+def test_po_three_kills_respect_protection():
+    g = make(["po", "assassin", "innkeeper", "fool", "gossip", "tinker", "gambler"])
+    to_night(g)
+    g.resolve(step(g, "po"), [])           # nobody
+    to_night(g)
+    g.resolve(step(g, "innkeeper"), [p(g, "Ema").pid, p(g, "Finn").pid], drunk=p(g, "Finn").pid)
+    with pytest.raises(GameError):
+        g.resolve(step(g, "po"), [p(g, "Ema").pid])   # must pick 3
+    g.resolve(step(g, "po"), [p(g, "Ema").pid, p(g, "Finn").pid, p(g, "Gita").pid])
+    assert p(g, "Ema").alive and p(g, "Finn").alive and not p(g, "Gita").alive
+    g.start_day()
+    assert "Gita died" in g.announcements[0]
+
+
+def test_exorcist_blocks_the_demon():
+    g = make(["po", "assassin", "exorcist", "fool", "gossip", "tinker", "gambler"])
+    to_night(g)
+    g.resolve(step(g, "exorcist"), [p(g, "Asha").pid])
+    assert g.step_applies(g.steps[step(g, "po")]) is False
+    g.start_day()
+    assert "Exorcist" in p(g, "Asha").thread[-1]["text"]
+
+
+def test_exorcist_cannot_repeat_last_nights_pick():
+    g = make(["po", "assassin", "exorcist", "fool", "gossip", "tinker", "gambler"])
+    to_night(g)
+    g.resolve(step(g, "exorcist"), [p(g, "Dev").pid])
+    to_night(g)
+    with pytest.raises(GameError, match="different"):
+        g.resolve(step(g, "exorcist"), [p(g, "Dev").pid])
+
+
+def test_shabaloth_regurgitates():
+    g = make(["shabaloth", "assassin", "sailor", "gossip", "tinker", "gambler", "fool"])
+    to_night(g)
+    g.resolve(step(g, "shabaloth"), [p(g, "Dev").pid, p(g, "Ema").pid])
+    to_night(g)
+    g.resolve(step(g, "shabaloth"), [p(g, "Finn").pid, p(g, "Gita").pid], regurgitate=p(g, "Dev").pid)
+    assert p(g, "Dev").alive
+
+
+def test_lunatic_attacks_are_shown_to_the_demon_and_kill_nobody():
+    g = make(["po", "assassin", "lunatic", "fool", "gossip", "tinker", "gambler"], believed={"lunatic": "shabaloth"})
+    to_night(g)
+    g.resolve(step(g, "shabaloth"), [p(g, "Dev").pid, p(g, "Ema").pid])
+    assert p(g, "Dev").alive and p(g, "Ema").alive
+    g.resolve(step(g, "po"), [])
+    g.start_day()
+    assert "Lunatic" in p(g, "Asha").thread[-1]["text"] and "Dev" in p(g, "Asha").thread[-1]["text"]
