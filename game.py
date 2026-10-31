@@ -93,7 +93,9 @@ class Game:
         self.bluffs: list[str] = []
         self.counts: dict[str, int] = {}
         self.executed_today: str | None = None
-        self.night_deaths: list[str] = []
+        # tonight's deaths, in order: [{"pid", "cause", "linked"}]; linked = a consequence of another death
+        self.night_deaths: list[dict] = []
+        self._dying = 0
         # pids that died (or registered as dead) during the current day; some characters act only when it is empty
         self.died_today: list[str] = []
         # the script's own bookkeeping (last picks, the Po's empty night...); undo restores it with the rest
@@ -926,8 +928,13 @@ class Game:
         self.died_today = []
         for p in self.players:
             p.prompt = None
-        dead = [self.get(pid).name for pid in self.night_deaths]
-        self._announce(f"Dawn. {' and '.join(dead) + ' died' if dead else 'Nobody died'} in the night.")
+        dead = [self.get(pid).name for pid in self._night_dead()]
+        self._announce(f"Dawn. {self._names(dead) + ' died' if dead else 'Nobody died'} in the night.")
+
+    @staticmethod
+    def _names(names: list[str]) -> str:
+        """"A", "A and B", "A, B and C"."""
+        return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
     def nominate(self, nominator: str, nominee: str, **options) -> None:
         """Record a nomination; the script may react (the Virgin).
@@ -1038,12 +1045,19 @@ class Game:
             return
         p.alive = False
         if self.phase == "night":
-            self.night_deaths.append(p.pid)
+            self.night_deaths.append({"pid": p.pid, "cause": cause, "linked": self._dying > 0})
         else:
             self.died_today.append(p.pid)
         self._log(f"{p.name} ({self.cname(p.character)}) dies: {cause}")
-        self.script.on_death(self, p, cause)
+        self._dying += 1
+        try:
+            self.script.on_death(self, p, cause)
+        finally:
+            self._dying -= 1
         self._check_win()
+
+    def _night_dead(self) -> list[str]:
+        return [d["pid"] for d in self.night_deaths]
 
     def confirm_death(self, index: int, dies: bool) -> None:
         """Storyteller decides a death the script left to them (see pending_deaths)."""
@@ -1084,8 +1098,7 @@ class Game:
         self._require("night", "day")
         p = self.get(pid)
         p.alive = True
-        if pid in self.night_deaths:
-            self.night_deaths.remove(pid)
+        self.night_deaths = [d for d in self.night_deaths if d["pid"] != pid]
         self._log(f"Storyteller revives {p.name}")
 
     def set_poisoned(self, pid: str | None) -> None:
@@ -1201,7 +1214,7 @@ class Game:
         who "registers dead" (the Zombuul's first death) looks dead while alive."""
         if self.has(p, "registers dead"):
             return False
-        return p.alive or (self.phase == "night" and p.pid in self.night_deaths)
+        return p.alive or (self.phase == "night" and p.pid in self._night_dead())
 
     def player_view(self, token: str) -> dict:
         """Public view plus the player's own role (as they believe it), messages and prompt."""
@@ -1244,7 +1257,10 @@ class Game:
             "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self._with_chip("poisoned"),
             "protected": self._with_chip("protected"), "master": self._with_chip("master"),
             "virgin_spent": self._spent("virgin"), "slayer_spent": self._spent("slayer"), "executed_today": self.executed_today,
-            "night_deaths": self.night_deaths, "pending_deaths": self.pending_deaths, "steps": steps,
+            "night_deaths": self._night_dead(), "night_deaths_full": self.night_deaths,
+            "pending_deaths": self.pending_deaths, "steps": steps,
+            "dawn": {"deaths": self.night_deaths, "pending": self.pending_deaths,
+                     "held": sum(len(t) for t in self.queued.values())},
             "nominations_full": self.nominations,
             "queued": {pid: texts for pid, texts in self.queued.items()}, "second_round_done": self.second_round_done,
             "threads": {p.pid: p.thread for p in self.players}, "unread": self._unread(),

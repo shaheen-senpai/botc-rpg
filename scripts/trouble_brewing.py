@@ -165,7 +165,7 @@ def deal_extras(characters: dict[str, str], rng: random.Random) -> dict:
 
 def step_applies(game: Game, step: dict) -> bool | None:
     if step["key"] == "ravenkeeper":
-        return step["pids"][0] in game.night_deaths
+        return step["pids"][0] in game._night_dead()
     if step["key"] == "undertaker" and not game.executed_today:
         return False
     return None

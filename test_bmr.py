@@ -324,3 +324,27 @@ def test_chambermaid_counts_who_woke():
     assert g.steps[step(g, "chambermaid")]["suggestion"] == "2 of them woke tonight."
     g.resolve(step(g, "chambermaid"), [p(g, "Dev").pid, p(g, "Ema").pid])
     assert g.steps[step(g, "chambermaid")]["suggestion"] == "1 of them woke tonight."
+
+
+# --- dawn ---
+
+def test_dawn_announces_every_death():
+    g = make(["po", "assassin", "sailor", "gossip", "gambler", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "po"), [])
+    to_night(g)
+    g.resolve(step(g, "po"), [p(g, "Dev").pid, p(g, "Ema").pid, p(g, "Finn").pid])
+    v = g.storyteller_view()["dawn"]
+    assert [d["cause"] for d in v["deaths"]] == ["demon", "demon", "demon"] and v["held"] == 0 and v["pending"] == []
+    g.start_day()
+    assert g.announcements[0] == "Dawn. Dev, Ema and Finn died in the night."
+
+
+def test_linked_death_is_marked_in_the_dawn_card():
+    g = make(["po", "assassin", "grandmother", "gossip", "gambler", "tinker", "tealady"])
+    g.resolve(step(g, "grandmother"), [])
+    child = g.get(g.script_state["grandchild"])
+    to_night(g)
+    g.resolve(step(g, "po"), [child.pid])
+    deaths = g.storyteller_view()["dawn"]["deaths"]
+    assert [(d["pid"], d["linked"]) for d in deaths] == [(child.pid, False), (p(g, "Chen").pid, True)]
