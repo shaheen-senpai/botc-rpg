@@ -213,6 +213,14 @@ export function dayModel(v, C) {
   };
 }
 
+// the messages view: every player, unread first, with their last line
+export function messagesModel(v) {
+  return v.players.map(p => {
+    const t = v.threads?.[p.pid] ?? [];
+    return {pid: p.pid, name: p.name, last: t.length ? t[t.length - 1].text : "", unread: t.filter(m => m.from === "player" && !m.seen).length};
+  }).sort((a, b) => (b.unread > 0) - (a.unread > 0));
+}
+
 export function lobbyModel(v) {
   const n = v.players.length;
   const canDeal = n >= 5 && n <= 15;

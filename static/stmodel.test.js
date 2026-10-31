@@ -1,7 +1,20 @@
 // Pure model tests for the grimoire page. Run: node --test static/
 import test from "node:test";
 import assert from "node:assert/strict";
-import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel, nightCards, dayModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, lobbyModel, drawerModel, nightCards, dayModel, messagesModel } from "./stmodel.js";
+
+test("messagesModel sorts unread first and shows the last line", () => {
+  const v = {players: [{pid: "p1", name: "Asha"}, {pid: "p2", name: "Ben"}, {pid: "p3", name: "Chen"}], threads: {
+    p1: [{id: 1, from: "st", text: "hi", label: "Day 1", seen: false}],
+    p2: [{id: 2, from: "player", text: "help?", label: "Day 1", seen: false}, {id: 3, from: "player", text: "please", label: "Day 1", seen: false}],
+    p3: [],
+  }};
+  assert.deepEqual(messagesModel(v), [
+    {pid: "p2", name: "Ben", last: "please", unread: 2},
+    {pid: "p1", name: "Asha", last: "hi", unread: 0},
+    {pid: "p3", name: "Chen", last: "", unread: 0},
+  ]);
+});
 
 const DC = {slayer: {name: "Slayer", uses: "day"}, butler: {name: "Butler", uses: "each_night"}, imp: {name: "Imp", uses: "each_night"},
   empath: {name: "Empath", uses: "each_night"}, gossip: {name: "Gossip", uses: "day"}};

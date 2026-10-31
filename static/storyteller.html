@@ -100,6 +100,11 @@
   .rem .x { background: none; border: 0; color: inherit; cursor: pointer; padding: 0 4px; font: inherit; }
   .picker { padding: 0.5rem; border: 1px dashed var(--ink-soft); border-radius: 8px; }
   .thread { display: flex; flex-direction: column; gap: 0.35rem; }
+  .msg-row { display: grid; grid-template-columns: 9rem 1fr; gap: 0.6rem; align-items: baseline; width: 100%; text-align: left; padding: 0.55rem 0; border: 0; border-top: 1px solid var(--parchment-dim); background: none; font: inherit; color: inherit; cursor: pointer; }
+  .msg-row .who { font-family: var(--display); font-size: var(--t-lg); display: flex; gap: 0.4rem; align-items: center; }
+  .msg-row .last { color: var(--ink-soft); font-size: var(--t-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg-row.unread .who { color: var(--oxblood); }
+  .badge { font: 700 var(--t-xs) var(--body); background: var(--oxblood); color: var(--parchment); border-radius: 999px; padding: 0 0.5rem; }
   .bub { max-width: 85%; padding: 0.45rem 0.75rem; border-radius: 14px; font-size: var(--t-sm); line-height: 1.35; white-space: pre-wrap; }
   .bub.them { align-self: flex-start; background: #fff8e6; border: 1px solid var(--parchment-dim); border-bottom-left-radius: 4px; }
   .bub.me { align-self: flex-end; background: var(--felt-deep); color: var(--on-felt); border-bottom-right-radius: 4px; }

@@ -1,7 +1,7 @@
 // The grimoire: polls /api/st, renders the top bar, the circle and the right column, posts actions.
 // Pure render data comes from stmodel.js / clockmath.js; this file owns the DOM and the Storyteller's UI state.
 
-import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel } from "./stmodel.js";
+import { phaseTitle, tokenMarks, seatPositions, nextStepPid, lobbyModel, drawerModel, nightCards, dayModel, messagesModel } from "./stmodel.js";
 import { handAngle, handIndex, serverNow } from "./clockmath.js";
 import { sound } from "./sound.js";
 
@@ -404,7 +404,10 @@ function abilityBlock(p, d) {
 }
 
 function messages() {
-  return `<div class="drawer-head"><button class="btn quiet small dim" onclick="showMessages()">← Back</button></div><h2>Messages</h2><p class="note">Coming in a later task.</p>`;
+  const rows = messagesModel(S).map(m => `<button class="msg-row ${m.unread ? "unread" : ""}" onclick="ui.openDrawer(${q(m.pid)})">
+      <span class="who">${esc(m.name)}${m.unread ? `<span class="badge">${m.unread}</span>` : ""}</span><span class="last">${esc(m.last) || "<i>nothing yet</i>"}</span></button>`).join("");
+  return `<div class="drawer-head"><button class="btn quiet small dim" onclick="showMessages()">← Back</button></div><h2>Messages</h2>
+    <p class="lede">One thread per player. Opening a thread marks what they wrote as seen on their phone.</p>${rows}`;
 }
 
 function lobby() {
@@ -613,7 +616,10 @@ const ui = {
   open(i, rerender = true) { openStep = i; if (rerender) render(); },
   nominateFrom(pid) { pendingNominator = pid; mode = pid ? "nominee" : "nominator"; selected = null; view = "ledger"; render(); },
   cancelPick() { mode = "none"; pendingNominator = null; render(); },
-  openDrawer(pid) { selected = pid; view = "drawer"; abilityTarget = null; render(); },
+  openDrawer(pid) {
+    selected = pid; view = "drawer"; abilityTarget = null;
+    if ((S.threads?.[pid] ?? []).some(m => m.from === "player" && !m.seen)) act("read_thread", {pid}); else render();
+  },
   target(pid) { abilityTarget = pid; render(); },
   picker(on) { reminderPicker = on; render(); },
   tools(v) { toolsOpen = v; },
