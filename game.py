@@ -538,6 +538,8 @@ class Game:
                 # living only: a dead Imp still holds the token after the Scarlet Woman or a star-pass takes over
                 pids = [p.pid for p in self.players if p.believed == key and p.alive]
                 night = self.C[key]["night"]
+                if night and self.night == 1 and night.get("first"):
+                    night = night["first"]   # e.g. the Godfather learns the Outsiders on night 1 and kills later
             if not pids or night is None:
                 continue
             choose = night["count"] if night["kind"] == "choose" else 0

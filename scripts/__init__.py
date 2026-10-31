@@ -43,6 +43,6 @@ def char_name(chars: dict, cid: str) -> str:
     return chars[cid]["name"]
 
 
-from scripts import trouble_brewing  # noqa: E402  (needs the constants above)
+from scripts import bad_moon_rising, trouble_brewing  # noqa: E402  (they need the constants above)
 
-SCRIPTS = {"tb": trouble_brewing}
+SCRIPTS = {"tb": trouble_brewing, "bmr": bad_moon_rising}
