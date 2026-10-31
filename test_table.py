@@ -129,3 +129,24 @@ def test_player_messages_survive_undo():
     g.note_to_storyteller(p(g, "Dev").token, "Hi back")
     g.undo()
     assert [m["text"] for m in p(g, "Dev").thread] == ["Nothing to report tonight.", "Hi back"]
+
+
+# --- hands ---
+
+def test_hand_up_down_and_order():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    g.raise_hand(p(g, "Dev").token, True)
+    g.raise_hand(p(g, "Asha").token, True)
+    assert g.public_view()["hands"] == [p(g, "Asha").pid, p(g, "Dev").pid]
+    assert g.storyteller_view()["hands"] == [p(g, "Dev").pid, p(g, "Asha").pid]
+    g.nominate(p(g, "Dev").pid, p(g, "Ema").pid)
+    assert g.public_view()["hands"] == [p(g, "Asha").pid]
+
+
+def test_dead_cannot_raise_to_nominate():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    g.kill(p(g, "Dev").pid)
+    with pytest.raises(GameError, match="Dead players cannot nominate"):
+        g.raise_hand(p(g, "Dev").token, True)

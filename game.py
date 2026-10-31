@@ -53,6 +53,8 @@ class Player:
     phone: bool = False
     # exempt from the night check: still prompted for real choices, never waited for
     exempt: bool = False
+    # hand raised by day to ask to nominate
+    hand: bool = False
     reminders: list[dict] = field(default_factory=list)
     # a once-per-game ability (or a first-death save) has been spent
     used: bool = False
@@ -107,9 +109,11 @@ class Game:
         self.second_round_done = False
         # the Storyteller stopped waiting for phones this night
         self.waiting_stopped = False
+        # pids with a hand up, in the order they were raised
+        self.hand_order: list[str] = []
         for p in self.players:
             p.character = p.believed = None
-            p.alive, p.ghost_vote, p.thread, p.prompt, p.reminders, p.used = True, True, [], None, [], False
+            p.alive, p.ghost_vote, p.thread, p.prompt, p.reminders, p.used, p.hand = True, True, [], None, [], False, False
 
     # --- abilities ---
 
@@ -687,6 +691,31 @@ class Game:
         return [{"pid": p.pid, "text": m["text"], "label": m["label"], "read": m["seen"]}
                 for p in self.players for m in p.thread if m["from"] == "player"]
 
+    # --- hands ---
+
+    def raise_hand(self, token: str, up: bool) -> None:
+        """Player raises or lowers their hand (day only): to ask to nominate."""
+        p = self.by_token(token)
+        if not p.alive:
+            raise GameError("Dead players cannot nominate")
+        self.set_hand(p.pid, up)
+
+    def set_hand(self, pid: str, up: bool) -> None:
+        """Storyteller raises or lowers a player's hand on their behalf."""
+        self._require("day")
+        p = self.get(pid)
+        p.hand = bool(up)
+        if p.pid in self.hand_order:
+            self.hand_order.remove(p.pid)
+        if up:
+            self.hand_order.append(p.pid)
+
+    def _lower_hands(self, pids: list[str] | None = None) -> None:
+        for p in self.players:
+            if pids is None or p.pid in pids:
+                p.hand = False
+        self.hand_order = [pid for pid in self.hand_order if self.get(pid).hand]
+
     # --- day ---
 
     def start_day(self) -> None:
@@ -729,6 +758,7 @@ class Game:
         if any(n["nominee"] == b.pid for n in self.nominations):
             raise GameError(f"{b.name} has already been nominated today")
         self.nominations.append({"nominator": a.pid, "nominee": b.pid, "voters": [], "votes": None})
+        self._lower_hands([a.pid])
         self._announce(f"{a.name} nominates {b.name}.")
         self.script.on_nomination(self, a, b, options)
 
@@ -777,6 +807,7 @@ class Game:
                     self._announce("Tied vote: nobody is executed.")
             else:
                 self._announce("Nobody is executed.")
+        self._lower_hands()
         if not self.winner:
             self.script.day_end(self)
         if not self.winner:
@@ -945,6 +976,7 @@ class Game:
             "announcements": self.announcements,
             "nominations": [{"nominator": self.get(n["nominator"]).name, "nominee": self.get(n["nominee"]).name,
                              "votes": n["votes"]} for n in self.nominations],
+            "hands": [p.pid for p in self.players if p.hand],
             "winner": self.winner, "win_reason": self.win_reason,
         }
 
@@ -984,6 +1016,7 @@ class Game:
                           "asked": self._asked(i), "hint": hint})
         return {
             **self.public_view(),
+            "hands": list(self.hand_order),
             "night_check": self.night_check, "waiting_stopped": self.waiting_stopped,
             "players": [{"pid": p.pid, "name": p.name, "character": p.character, "believed": p.believed,
                          "alive": p.alive, "ghost_vote": p.ghost_vote, "reminders": [r["text"] for r in p.reminders],
