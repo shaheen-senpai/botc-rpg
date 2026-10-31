@@ -91,3 +91,41 @@ def test_stop_waiting_releases_dawn_once():
     g.end_day()
     with pytest.raises(GameError):
         g.start_day()
+
+
+# --- threads ---
+
+def test_thread_holds_both_directions_and_seen():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    g.message(p(g, "Dev").pid, "Hello")
+    g.note_to_storyteller(p(g, "Dev").token, "Hi back")
+    t = g.player_view(p(g, "Dev").token)["me"]["thread"]
+    assert t[0] == {"from": "st", "text": "Nothing to report tonight.", "label": "Night 1", "seen": False}
+    assert [(m["from"], m["text"], m["seen"]) for m in t[1:]] == [("st", "Hello", False), ("player", "Hi back", False)]
+    assert g.storyteller_view()["unread"] == 1
+    g.read_thread(p(g, "Dev").pid)
+    assert g.player_view(p(g, "Dev").token)["me"]["thread"][2]["seen"] is True
+    assert g.storyteller_view()["unread"] == 0
+
+
+def test_compat_keys_still_derived():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    g.message(p(g, "Dev").pid, "Hello")
+    g.note_to_storyteller(p(g, "Dev").token, "Hi back")
+    me = g.player_view(p(g, "Dev").token)["me"]
+    assert me["messages"][-1] == {"label": "Day 1", "text": "Hello"}
+    assert me["notes"] == [{"label": "Day 1", "text": "Hi back"}]
+    assert g.storyteller_view()["inbox"][0]["read"] is False
+
+
+def test_player_messages_survive_undo():
+    g = make(["imp", "poisoner", "monk", "empath", "soldier"])
+    g.start_day()
+    before = g.snapshot()
+    g.message(p(g, "Dev").pid, "Hello")
+    g.push_undo("Message Dev", before, seen=True)
+    g.note_to_storyteller(p(g, "Dev").token, "Hi back")
+    g.undo()
+    assert [m["text"] for m in p(g, "Dev").thread] == ["Nothing to report tonight.", "Hi back"]

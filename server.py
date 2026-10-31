@@ -35,7 +35,7 @@ ST_ACTIONS = {
     "set_script", "set_night_check", "set_exempt", "stop_waiting",
     "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
     "ask", "resolve", "second_round", "send", "finish_step", "message", "start_day", "nominate", "record_votes",
-    "slayer_shot", "day_ability", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
+    "slayer_shot", "day_ability", "end_day", "read_inbox", "read_thread", "kill", "revive", "set_poisoned", "set_reminder", "set_ghost_vote",
     "declare_winner", "reset", "undo",
 }
 
@@ -53,8 +53,8 @@ ACTION_LABELS = {
     "end_day": "End the day", "kill": "Kill {name}", "revive": "Bring back {name}", "set_poisoned": "Change poison",
     "set_ghost_vote": "Change {name}'s ghost vote", "declare_winner": "End the game", "reset": "Reset to the lobby",
 }
-# not undoable: marking notes read, and undo itself
-NO_UNDO = {"read_inbox", "undo"}
+# not undoable: marking messages read, and undo itself
+NO_UNDO = {"read_inbox", "read_thread", "undo"}
 
 
 class JoinBody(BaseModel):
@@ -177,6 +177,7 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
             return {}
 
     @app.post("/api/note")
+    @app.post("/api/message")
     def note(body: NoteBody) -> dict:
         with lock:
             game.note_to_storyteller(body.token, body.text)

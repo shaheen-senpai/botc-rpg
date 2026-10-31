@@ -29,7 +29,8 @@ class Player:
     """One seat at the table.
 
     pid is public (used by everyone to refer to the player); token is secret (the player's login).
-    messages schema: list of {"label": str, "text": str}.
+    thread schema: list of {"from": "st" | "player", "text": str, "label": str, "seen": bool} - the
+    conversation between this player and the Storyteller, oldest first.
     prompt schema, one of (or None):
         real choice: {"kind": "choose", "text": str, "count": int, "allow_self": bool,
                       "answer": list[str] | None, "step": int (index into Game.steps)}
@@ -47,7 +48,7 @@ class Player:
     believed: str | None = None
     alive: bool = True
     ghost_vote: bool = True
-    messages: list[dict] = field(default_factory=list)
+    thread: list[dict] = field(default_factory=list)
     prompt: dict | None = None
     phone: bool = False
     # exempt from the night check: still prompted for real choices, never waited for
@@ -55,6 +56,11 @@ class Player:
     reminders: list[dict] = field(default_factory=list)
     # a once-per-game ability (or a first-death save) has been spent
     used: bool = False
+
+    @property
+    def messages(self) -> list[dict]:
+        """The Storyteller's side of the thread as [{label, text}] (older clients and tests)."""
+        return [{"label": m["label"], "text": m["text"]} for m in self.thread if m["from"] == "st"]
 
 
 class Game:
@@ -101,11 +107,9 @@ class Game:
         self.second_round_done = False
         # the Storyteller stopped waiting for phones this night
         self.waiting_stopped = False
-        # notes from players to the Storyteller: [{"pid", "text", "label", "read"}]
-        self.inbox: list[dict] = []
         for p in self.players:
             p.character = p.believed = None
-            p.alive, p.ghost_vote, p.messages, p.prompt, p.reminders, p.used = True, True, [], None, [], False
+            p.alive, p.ghost_vote, p.thread, p.prompt, p.reminders, p.used = True, True, [], None, [], False
 
     # --- abilities ---
 
@@ -500,12 +504,16 @@ class Game:
         """Hold a private text for the next table-wide buzz."""
         self.queued.setdefault(pid, []).append(text)
 
+    def _say(self, p: Player, text: str) -> None:
+        """Deliver a Storyteller text into p's thread now."""
+        p.thread.append({"from": "st", "text": text, "label": self._stamp(), "seen": False})
+
     def _flush(self, filler: str | None = None) -> None:
         """Deliver held texts; with filler, every player without one gets filler instead."""
         for p in self.players:
             texts = self.queued.pop(p.pid, []) or ([filler] if filler else [])
             for text in texts:
-                p.messages.append({"label": self._stamp(), "text": text})
+                self._say(p, text)
 
     def _build_steps(self) -> list[dict]:
         """Night order for this night, limited to characters that are in play.
@@ -619,7 +627,7 @@ class Game:
             self._notify(pid, text.strip())
             self._log(f"For {p.name} at dawn: {text.strip()}")
         else:
-            p.messages.append({"label": self._stamp(), "text": text.strip()})
+            self._say(p, text.strip())
             self._log(f"To {p.name}: {text.strip()}")
 
     def choose(self, token: str, choices: list[str]) -> None:
@@ -656,13 +664,28 @@ class Game:
             raise GameError("Write something first")
         if len(text) > 500:
             raise GameError("Keep it under 500 characters")
-        self.inbox.append({"pid": p.pid, "text": text, "label": self._stamp(), "read": False})
+        p.thread.append({"from": "player", "text": text, "label": self._stamp(), "seen": False})
         self._log(f"Note from {p.name}: {text}")
 
+    def read_thread(self, pid: str) -> None:
+        """Storyteller has read one player's messages: they show as seen on that phone."""
+        for m in self.get(pid).thread:
+            if m["from"] == "player":
+                m["seen"] = True
+
     def read_inbox(self) -> None:
-        """Storyteller marks every note as read."""
-        for note in self.inbox:
-            note["read"] = True
+        """Storyteller marks every player's messages as seen (older clients)."""
+        for p in self.players:
+            self.read_thread(p.pid)
+
+    def _unread(self) -> int:
+        return sum(m["from"] == "player" and not m["seen"] for p in self.players for m in p.thread)
+
+    @property
+    def inbox(self) -> list[dict]:
+        """Every player's own messages as [{pid, text, label, read}] (older clients and tests)."""
+        return [{"pid": p.pid, "text": m["text"], "label": m["label"], "read": m["seen"]}
+                for p in self.players for m in p.thread if m["from"] == "player"]
 
     # --- day ---
 
@@ -846,8 +869,8 @@ class Game:
     # --- undo ---
 
     UNDO_DEPTH = 30
-    # survive an undo: counters phones compare, notes players wrote, the record of what happened
-    _KEPT_ON_UNDO = ("version", "buzz", "inbox", "log", "history", "_next_pid", "phone_inputs", "clock", "script")
+    # survive an undo: counters phones compare, the record of what happened (players' own messages: see undo)
+    _KEPT_ON_UNDO = ("version", "buzz", "log", "history", "_next_pid", "phone_inputs", "clock", "script")
 
     def snapshot(self) -> dict:
         """Deep copy of everything an undo restores (all state except _KEPT_ON_UNDO)."""
@@ -890,9 +913,13 @@ class Game:
         entry = self.history.pop()
         restored = {p.pid for p in entry["state"]["players"]}
         joined = [p for p in self.players if p.pid not in restored]
+        # what players wrote since the snapshot is theirs to keep
+        written = {p.pid: [m for m in p.thread if m["from"] == "player"] for p in self.players}
         self.__dict__.update(entry["state"])
         if self.phase == "lobby":
             self.players += joined
+        for p in self.players:
+            p.thread += [m for m in written.get(p.pid, []) if m not in p.thread]
         self._log(f"Storyteller undid: {entry['label']}")
 
     # --- views ---
@@ -933,8 +960,10 @@ class Game:
             "pid": p.pid, "name": p.name, "alive": self._publicly_alive(p),
             "role": {"id": p.believed, **self.C[p.believed]} if started and p.believed else None,
             "ability": self.ability_state(p) if started and p.believed else None,
-            "messages": p.messages, "prompt": p.prompt,
-            "notes": [{"text": n["text"], "label": n["label"]} for n in self.inbox if n["pid"] == p.pid],
+            "thread": p.thread, "prompt": p.prompt,
+            # older clients: the Storyteller's side and the player's side as separate lists
+            "messages": p.messages,
+            "notes": [{"text": m["text"], "label": m["label"]} for m in p.thread if m["from"] == "player"],
         }}
 
     def storyteller_view(self) -> dict:
@@ -966,6 +995,7 @@ class Game:
             "night_deaths": self.night_deaths, "pending_deaths": self.pending_deaths, "steps": steps,
             "nominations_full": self.nominations,
             "queued": {pid: texts for pid, texts in self.queued.items()}, "second_round_done": self.second_round_done,
+            "threads": {p.pid: p.thread for p in self.players}, "unread": self._unread(),
             "inbox": self.inbox, "phones_done": list(self.phones_done()),
             "phones": [{"pid": p.pid, "name": p.name, "done": p not in self.phones_waiting()} for p in self._phone_players()],
             "warnings": self.setup_warnings(), "log": self.log, "undo": self.undo_info(),
