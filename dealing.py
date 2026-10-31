@@ -1,18 +1,19 @@
-"""Random, rules-valid role dealing for a Trouble Brewing game."""
+"""Random, rules-valid role dealing for any script."""
 
 import random
+from types import ModuleType
 
-from roles import CHARACTERS, DEMON, MINION, OUTSIDER, SETUP_COUNTS, TOWNSFOLK, ids_of, is_good
+from scripts import DEMON, MINION, OUTSIDER, SETUP_COUNTS, TOWNSFOLK, ids_of
 
 
-def pick_characters(players: int, rng: random.Random) -> list[str]:
+def pick_characters(script: ModuleType, players: int, rng: random.Random) -> list[str]:
     """Choose which characters are in play for a player count.
 
-    Algorithm: look up the base (townsfolk, outsiders, minions, demons) counts, draw the Minions
-    first, and if the Baron was drawn swap two Townsfolk slots for Outsiders. Then draw that many
-    Townsfolk and Outsiders without replacement, and add the Imp.
+    Algorithm: draw the Minions first, let the script adjust the counts for them (Baron, Godfather),
+    then draw that many Townsfolk and Outsiders and the Demon(s) without replacement.
 
     Args:
+        script (ModuleType): the script module.
         players (int): 5-15.
         rng (random.Random): randomness source.
 
@@ -20,59 +21,35 @@ def pick_characters(players: int, rng: random.Random) -> list[str]:
         list[str]: character ids, one per player, unshuffled.
     """
     if players not in SETUP_COUNTS:
-        raise ValueError(f"Trouble Brewing supports 5-15 players, got {players}")
-    tf, out, mn, _ = SETUP_COUNTS[players]
-    minions = rng.sample(ids_of(MINION), mn)
-    if "baron" in minions:
-        tf, out = tf - 2, out + 2
-    return rng.sample(ids_of(TOWNSFOLK), tf) + rng.sample(ids_of(OUTSIDER), out) + minions + ids_of(DEMON)
+        raise ValueError(f"{script.NAME} supports 5-15 players, got {players}")
+    chars = script.CHARACTERS
+    minions = rng.sample(ids_of(chars, MINION), SETUP_COUNTS[players][2])
+    tf, out, _, dm = script.expected_counts(players, minions)
+    return (rng.sample(ids_of(chars, TOWNSFOLK), tf) + rng.sample(ids_of(chars, OUTSIDER), out)
+            + minions + rng.sample(ids_of(chars, DEMON), dm))
 
 
-def deal(pids: list[str], rng: random.Random) -> dict:
-    """Deal characters to players and make the Storyteller's hidden setup choices.
-
-    Algorithm: pick the characters in play and shuffle them onto the players. If the Drunk is in
-    play, give them a random Townsfolk that is not in play to believe in. Pick a random good player
-    as the Fortune Teller's red herring. Pick three good characters that are not in play, not the
-    Drunk's fake role, and not the Drunk itself as the Demon's bluffs.
-
-    Args:
-        pids (list[str]): public player ids in seat order.
-        rng (random.Random): randomness source.
+def deal(script: ModuleType, pids: list[str], rng: random.Random) -> dict:
+    """Deal characters to players and make the script's hidden setup choices.
 
     Returns:
-        dict with keys:
-            characters  (dict[str, str]) pid -> true character id
-            believed    (dict[str, str]) pid -> character the player is told (differs only for the Drunk)
-            red_herring (str) pid
-            bluffs      (list[str]) three character ids
+        dict with keys characters (pid -> true character id) plus the script's deal_extras:
+        believed (pid -> character the player is told), red_herring (pid | None), bluffs (3 ids).
     """
-    chars = pick_characters(len(pids), rng)
+    chars = pick_characters(script, len(pids), rng)
     rng.shuffle(chars)
     characters = dict(zip(pids, chars))
-    in_play = set(chars)
-
-    drunk_as = None
-    if "drunk" in in_play:
-        drunk_as = rng.choice([t for t in ids_of(TOWNSFOLK) if t not in in_play])
-    believed = {pid: (drunk_as if c == "drunk" else c) for pid, c in characters.items()}
-
-    red_herring = rng.choice([pid for pid, c in characters.items() if is_good(c)])
-    # nobody knowingly claims Drunk, so it is never a useful bluff
-    bluff_pool = [c for c in CHARACTERS if is_good(c) and c not in in_play | {drunk_as, "drunk"}]
-    return {
-        "characters": characters,
-        "believed": believed,
-        "red_herring": red_herring,
-        "bluffs": rng.sample(bluff_pool, 3),
-    }
+    return {"characters": characters, **script.deal_extras(characters, rng)}
 
 
 if __name__ == "__main__":
-    result = deal([f"p{i}" for i in range(1, 10)], random.Random())
+    from scripts import SCRIPTS
+
+    tb = SCRIPTS["tb"]
+    result = deal(tb, [f"p{i}" for i in range(1, 10)], random.Random())
     for pid, c in result["characters"].items():
         shown = result["believed"][pid]
-        note = f" (thinks {CHARACTERS[shown]['name']})" if shown != c else ""
-        print(f"{pid}: {CHARACTERS[c]['name']}{note}")
+        note = f" (thinks {tb.CHARACTERS[shown]['name']})" if shown != c else ""
+        print(f"{pid}: {tb.CHARACTERS[c]['name']}{note}")
     print("red herring:", result["red_herring"])
-    print("bluffs:", [CHARACTERS[b]["name"] for b in result["bluffs"]])
+    print("bluffs:", [tb.CHARACTERS[b]["name"] for b in result["bluffs"]])

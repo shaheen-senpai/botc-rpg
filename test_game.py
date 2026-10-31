@@ -4,9 +4,14 @@ import random
 
 import pytest
 
-import info
+import scripts
 from game import Game, GameError
-from roles import CHARACTERS, is_good
+from scripts import trouble_brewing as info
+from scripts.trouble_brewing import CHARACTERS
+
+
+def is_good(c: str) -> bool:
+    return scripts.is_good(CHARACTERS, c)
 
 NAMES = ["Asha", "Ben", "Chen", "Dev", "Ema", "Finn", "Gita", "Hari", "Ines"]
 

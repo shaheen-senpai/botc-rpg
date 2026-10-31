@@ -26,21 +26,22 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from game import Game, GameError
-from roles import CHARACTERS
+from scripts import SCRIPTS, TYPES
 
 STATIC = Path(__file__).parent / "static"
 
 # Game methods the Storyteller page may call as POST /api/st/<name>
 ST_ACTIONS = {
-    "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
+    "set_script", "add_player", "remove_player", "move_player", "deal", "set_character", "set_setup", "start_game",
     "ask", "resolve", "second_round", "send", "finish_step", "message", "start_day", "nominate", "record_votes",
-    "slayer_shot", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_ghost_vote", "declare_winner", "reset",
-    "undo",
+    "slayer_shot", "day_ability", "end_day", "read_inbox", "kill", "revive", "set_poisoned", "set_ghost_vote",
+    "declare_winner", "reset", "undo",
 }
 
 
 # undo-button text per action; {name} is the player named by the body's pid
 ACTION_LABELS = {
+    "set_script": "Choose the {body_script} script", "day_ability": "Use {name}'s ability",
     "add_player": "Seat {body_name}", "remove_player": "Remove {name}", "move_player": "Move {name}",
     "deal": "Deal characters", "set_character": "Change {name}'s character", "set_setup": "Save red herring and bluffs",
     "start_game": "Start the game", "ask": "Ask again", "resolve": "Work out a night step", "second_round": "Second buzz",
@@ -106,7 +107,8 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
     def action_label(action: str, body: dict) -> str:
         pid = body.get("pid")
         name = next((p.name for p in game.players if p.pid == pid), "a player")
-        return ACTION_LABELS[action].format(name=name, body_name=body.get("name", "a player"))
+        return ACTION_LABELS[action].format(name=name, body_name=body.get("name", "a player"),
+                                            body_script=body.get("script", ""))
 
     def phone_view() -> str:
         # exactly what each phone receives, minus the version counter
@@ -135,7 +137,14 @@ def create_app(game: Game, st_key: str, join_url: str) -> FastAPI:
 
     @app.get("/api/characters")
     def characters() -> dict:
-        return CHARACTERS
+        with lock:
+            return game.script.CHARACTERS
+
+    @app.get("/api/scripts")
+    def script_list() -> list:
+        return [{"id": s.ID, "name": s.NAME,
+                 "counts": {t: sum(c["type"] == t for c in s.CHARACTERS.values()) for t in TYPES}}
+                for s in SCRIPTS.values()]
 
     @app.get("/api/state")
     def state(token: str = "") -> dict:

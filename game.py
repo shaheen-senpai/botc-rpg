@@ -1,7 +1,9 @@
-"""Trouble Brewing game state and rules: seating, setup, night steps, nominations, deaths, wins.
+"""Game state and generic rules: seating, setup, night steps, nominations, deaths, wins.
 
-Every public method is either a Storyteller action (called with pids) or a player action (called
-with the player's secret token). Invalid actions raise GameError with a message for the user.
+Everything character-specific lives in the script module (scripts/<script>.py) behind the hooks
+listed in scripts/__init__.py. Every public method is either a Storyteller action (called with
+pids) or a player action (called with the player's secret token). Invalid actions raise GameError
+with a message for the user.
 """
 
 from __future__ import annotations
@@ -10,12 +12,12 @@ import copy
 import math
 import random
 import secrets
+import time
 from dataclasses import dataclass, field
 
 import dealing
-import info
-from roles import (CHARACTERS, DEMON, EVIL_INFO_MIN_PLAYERS, FIRST_NIGHT, MINION, NIGHT_CHOICES,
-                   OTHER_NIGHTS, OUTSIDER, SETUP_COUNTS, TOWNSFOLK, expected_counts, is_good)
+import scripts
+from scripts import DEMON, MINION, OUTSIDER, SCRIPTS, SETUP_COUNTS, TOWNSFOLK, TYPES
 
 
 class GameError(Exception):
@@ -51,9 +53,11 @@ class Player:
 class Game:
     """Single game in memory. Seat order is the order of self.players."""
 
-    def __init__(self, rng: random.Random | None = None):
-        """Empty lobby. rng is injectable for reproducible games."""
+    def __init__(self, rng: random.Random | None = None, script: str = "tb", clock=time.time):
+        """Empty lobby. rng is injectable for reproducible games; clock (-> float seconds) for timed votes."""
         self.rng = rng or random.Random()
+        self.clock = clock
+        self.script = self._script(script)
         self.players: list[Player] = []
         self.version = 0
         self._next_pid = 1
@@ -78,6 +82,8 @@ class Game:
         self.slayer_spent = False
         self.executed_today: str | None = None
         self.night_deaths: list[str] = []
+        # deaths the script wants the Storyteller to decide: [{"pid", "cause", "why"}]
+        self.pending_deaths: list[dict] = []
         self.steps: list[dict] = []
         self.nominations: list[dict] = []
         self.announcements: list[str] = []
@@ -96,6 +102,28 @@ class Game:
             p.alive, p.ghost_vote, p.messages, p.prompt = True, True, [], None
 
     # --- lookups ---
+
+    @staticmethod
+    def _script(script_id: str):
+        if script_id not in SCRIPTS:
+            raise GameError(f"Unknown script {script_id!r}")
+        return SCRIPTS[script_id]
+
+    @staticmethod
+    def error(message: str) -> GameError:
+        """A GameError for script modules to raise (they cannot import this module)."""
+        return GameError(message)
+
+    @property
+    def C(self) -> dict:
+        """The current script's character table."""
+        return self.script.CHARACTERS
+
+    def cname(self, cid: str) -> str:
+        return self.C[cid]["name"]
+
+    def is_good(self, cid: str) -> bool:
+        return scripts.is_good(self.C, cid)
 
     def get(self, pid: str | None) -> Player:
         """Player by public id."""
@@ -120,8 +148,8 @@ class Game:
         return math.ceil(self.alive_count() / 2)
 
     def impaired(self, p: Player) -> bool:
-        """True if the player's ability does not work: they are the Drunk or currently poisoned."""
-        return p.character == "drunk" or self.poisoned == p.pid
+        """True if the player's ability does not work: a Drunk-like character or currently poisoned."""
+        return p.character in self.script.IMPAIRED_CHARACTERS or self.poisoned == p.pid
 
     def _working(self, p: Player, character: str) -> bool:
         """True if p is alive, truly holds character, and is not poisoned."""
@@ -129,10 +157,10 @@ class Game:
 
     def _alive_demon(self) -> Player | None:
         """The living Demon, if any."""
-        return next((p for p in self.players if p.alive and CHARACTERS[p.character]["type"] == DEMON), None)
+        return next((p for p in self.players if p.alive and self._type_of(p) == DEMON), None)
 
     def _type_of(self, p: Player) -> str:
-        return CHARACTERS[p.character]["type"]
+        return self.C[p.character]["type"]
 
     def _require(self, *phases: str) -> None:
         if self.phase not in phases:
@@ -149,6 +177,11 @@ class Game:
         self._log(text)
 
     # --- lobby ---
+
+    def set_script(self, script: str) -> None:
+        """Choose the script (lobby only)."""
+        self._require("lobby")
+        self.script = self._script(script)
 
     def add_player(self, name: str, phone: bool = False) -> Player:
         """Seat a new player at the end of the circle (lobby only). Returns the player incl. token.
@@ -187,8 +220,8 @@ class Game:
         """Randomly deal a valid setup to the seated players (lobby or re-deal during setup)."""
         self._require("lobby", "setup")
         if len(self.players) not in SETUP_COUNTS:
-            raise GameError("Trouble Brewing needs 5-15 players")
-        result = dealing.deal([p.pid for p in self.players], self.rng)
+            raise GameError(f"{self.script.NAME} needs 5-15 players")
+        result = dealing.deal(self.script, [p.pid for p in self.players], self.rng)
         for p in self.players:
             p.character = result["characters"][p.pid]
             p.believed = result["believed"][p.pid]
@@ -196,32 +229,39 @@ class Game:
         self.bluffs = result["bluffs"]
         self.phase = "setup"
 
+    def _fakers(self) -> list[Player]:
+        """Players whose character believes it is another character (the Drunk, the Lunatic)."""
+        return [p for p in self.players if p.character and self.C[p.character].get("fake")]
+
     def set_character(self, pid: str, character: str, believed: str | None = None) -> None:
         """Storyteller override of a player's character (any time before the game ends).
 
-        For the Drunk, believed must be a Townsfolk; it defaults to a random Townsfolk not in play.
-        For everyone else, believed always equals character.
+        For a character with a fake belief (the Drunk believes a Townsfolk, the Lunatic a Demon),
+        believed must be of that type; it defaults to a random one not in play. For everyone else,
+        believed always equals character.
         """
         self._require("setup", "night", "day")
-        if character not in CHARACTERS:
+        if character not in self.C:
             raise GameError(f"Unknown character {character!r}")
         p = self.get(pid)
-        if character == "drunk":
+        fake = self.C[character].get("fake")
+        if fake:
             in_play = {q.character for q in self.players}
             believed = believed or self.rng.choice(
-                [c for c in CHARACTERS if CHARACTERS[c]["type"] == TOWNSFOLK and c not in in_play])
-            if CHARACTERS[believed]["type"] != TOWNSFOLK:
-                raise GameError("The Drunk must believe they are a Townsfolk")
+                [c for c in self.C if self.C[c]["type"] == fake and c not in in_play])
+            if believed not in self.C or self.C[believed]["type"] != fake:
+                raise GameError(f"The {self.cname(character)} must believe they are a {fake.title()}")
         else:
             believed = character
         p.character, p.believed = character, believed
         if self.phase != "setup":
-            self._log(f"Storyteller set {p.name} to {info.char_name(character)}")
+            self._log(f"Storyteller set {p.name} to {self.cname(character)}")
 
-    def set_setup(self, red_herring: str, bluffs: list[str]) -> None:
-        """Set the Fortune Teller red herring (a pid) and the Demon's three bluffs (character ids)."""
+    def set_setup(self, red_herring: str | None, bluffs: list[str]) -> None:
+        """Set the Fortune Teller red herring (a pid, scripts with one) and the Demon's three bluffs."""
         self._require("setup")
-        self.get(red_herring)
+        if red_herring:
+            self.get(red_herring)
         problems = self.bluff_problems(bluffs)
         if problems:
             raise GameError(problems[0])
@@ -231,29 +271,23 @@ class Game:
         """Reasons the Demon's bluffs are illegal for the current seating; empty when they are fine.
 
         Algorithm: require exactly three known character ids, all different, each on the good team
-        (Townsfolk or Outsider), none held by a player, and none the Drunk believes they are (the
+        (Townsfolk or Outsider), none held by a player, and none a faker believes they are (the
         Drunk openly claims that character, so the Demon would be caught out by a double claim).
-
-        Args:
-            bluffs (list[str]): character ids proposed as bluffs.
-
-        Returns:
-            list[str]: one sentence per problem, in the order checked.
         """
-        if len(bluffs) != 3 or any(b not in CHARACTERS for b in bluffs):
+        if len(bluffs) != 3 or any(b not in self.C for b in bluffs):
             return ["Pick exactly three bluff characters"]
         problems = []
         if len(set(bluffs)) != 3:
             problems.append("The three Demon bluffs must be different characters")
-        evil = sorted({info.char_name(b) for b in bluffs if not is_good(b)})
+        evil = sorted({self.cname(b) for b in bluffs if not self.is_good(b)})
         if evil:
             problems.append(f"Demon bluffs must be good characters, not {', '.join(evil)}")
-        in_play = sorted({info.char_name(b) for b in bluffs if any(p.character == b for p in self.players)})
+        in_play = sorted({self.cname(b) for b in bluffs if any(p.character == b for p in self.players)})
         if in_play:
             problems.append(f"Demon bluffs must not be in play: {', '.join(in_play)}")
-        drunk = next((p for p in self.players if p.character == "drunk"), None)
-        if drunk and drunk.believed in bluffs:
-            problems.append(f"The Drunk believes they are the {info.char_name(drunk.believed)}, so it cannot be a bluff")
+        for f in self._fakers():
+            if f.believed in bluffs:
+                problems.append(f"The {self.cname(f.character)} believes they are the {self.cname(f.believed)}, so it cannot be a bluff")
         return problems
 
     def setup_warnings(self) -> list[str]:
@@ -262,44 +296,43 @@ class Game:
             return []
         chars = [p.character for p in self.players]
         warnings = []
-        counts = tuple(sum(CHARACTERS[c]["type"] == t for c in chars) for t in (TOWNSFOLK, OUTSIDER, MINION, DEMON))
-        want = expected_counts(len(chars), "baron" in chars)
+        counts = tuple(sum(self.C[c]["type"] == t for c in chars) for t in TYPES)
+        want = self.script.expected_counts(len(chars), chars)
         if counts != want:
             warnings.append(f"Counts (townsfolk, outsiders, minions, demons) are {counts}; rules say {want}")
         dupes = {c for c in chars if chars.count(c) > 1}
         if dupes:
-            warnings.append("Duplicate characters: " + ", ".join(info.char_name(c) for c in dupes))
-        drunk = next((p for p in self.players if p.character == "drunk"), None)
-        if drunk and drunk.believed in chars:
-            warnings.append("The Drunk believes they are a character that is in play")
-        if self.red_herring and not is_good(self.get(self.red_herring).character):
+            warnings.append("Duplicate characters: " + ", ".join(self.cname(c) for c in dupes))
+        for f in self._fakers():
+            if f.believed in chars:
+                warnings.append(f"The {self.cname(f.character)} believes they are a character that is in play")
+        if self.red_herring and not self.is_good(self.get(self.red_herring).character):
             warnings.append("The red herring should be a good player")
         return warnings
 
     def start_game(self) -> None:
         """Lock the setup, publish type counts, and begin the first night.
 
-        Refuses duplicate characters, counting the Drunk's believed character: two holders of one
-        character would share a single night step, so only one of them would ever be prompted.
-        Refuses illegal Demon bluffs, since character changes after the deal can put a bluff in play.
+        Refuses duplicate characters, counting fake beliefs: two holders of one character would share
+        a single night step, so only one of them would ever be prompted. Refuses illegal Demon bluffs,
+        since character changes after the deal can put a bluff in play.
         """
         self._require("setup")
-        if not any(CHARACTERS[p.character]["type"] == DEMON for p in self.players):
+        if not any(self._type_of(p) == DEMON for p in self.players):
             raise GameError("There must be a Demon")
         chars = [p.character for p in self.players]
-        dupes = sorted({info.char_name(c) for c in chars if chars.count(c) > 1})
+        dupes = sorted({self.cname(c) for c in chars if chars.count(c) > 1})
         if dupes:
             raise GameError(f"Each character can only be dealt once: {', '.join(dupes)}")
-        drunk = next((p for p in self.players if p.character == "drunk"), None)
-        if drunk and drunk.believed in chars:
-            raise GameError(f"The Drunk must believe they are a Townsfolk not in play, "
-                            f"and the {info.char_name(drunk.believed)} is in play")
+        for f in self._fakers():
+            if f.believed in chars:
+                raise GameError(f"The {self.cname(f.character)} must believe they are a character not in play, "
+                                f"and the {self.cname(f.believed)} is in play")
         problems = self.bluff_problems(self.bluffs)
         if problems:
             raise GameError(problems[0])
-        self.counts = {t: sum(CHARACTERS[p.character]["type"] == t for p in self.players)
-                       for t in (TOWNSFOLK, OUTSIDER, MINION, DEMON)}
-        self._log("Game started: " + ", ".join(f"{p.name}={info.char_name(p.character)}" for p in self.players))
+        self.counts = {t: sum(self._type_of(p) == t for p in self.players) for t in TYPES}
+        self._log("Game started: " + ", ".join(f"{p.name}={self.cname(p.character)}" for p in self.players))
         self.start_night()
 
     # --- night ---
@@ -308,8 +341,8 @@ class Game:
         """Begin the next night with every phone buzzing at once.
 
         Algorithm: expire poison, protection and Master; build the night order; push each living
-        chooser's prompt (except the Ravenkeeper, who waits for the second round); deliver anything
-        held since the day (e.g. a Scarlet Woman who became the Imp); buzz every phone.
+        chooser's prompt (except steps the script wakes later, e.g. the Ravenkeeper); deliver anything
+        held since the day; buzz every phone.
         """
         self._require("setup", "day")
         self.phase = "night"
@@ -321,7 +354,7 @@ class Game:
             p.prompt = None
         self.steps = self._build_steps()
         for i, s in enumerate(self.steps):
-            if s["choose"] and s["key"] != "ravenkeeper" and self.step_applies(s):
+            if s["choose"] and self.step_applies(s):
                 self.ask(i)
         self._hand_out_tap_tasks()
         self._log("Night falls")
@@ -329,7 +362,7 @@ class Game:
         self.buzz += 1
 
     def second_round(self) -> None:
-        """Buzz every phone again (nights 2+); the Ravenkeeper gets their prompt only if killed tonight.
+        """Buzz every phone again (nights 2+); steps that only apply after a death get their prompt now.
 
         Runs every night regardless, so the second buzz never reveals that a Ravenkeeper died.
         """
@@ -339,11 +372,15 @@ class Game:
         self._require_phones_done("the second buzz")
         self.second_round_done = True
         for i, s in enumerate(self.steps):
-            if s["key"] == "ravenkeeper" and self.step_applies(s):
+            if s["choose"] and not s["done"] and s["answer"] is None and self.step_applies(s) and not self._asked(i):
                 self.ask(i)
         self._hand_out_tap_tasks()
         self.buzz += 1
         self._log("Second round: every phone buzzes")
+
+    def _asked(self, step: int) -> bool:
+        actor = self.get(self.steps[step]["pids"][0])
+        return bool(actor.prompt and actor.prompt.get("step") == step)
 
     def _hand_out_tap_tasks(self) -> None:
         """Give a tap task to every publicly alive phone player not busy with an unanswered real choice.
@@ -354,12 +391,10 @@ class Game:
         everyone else; players known dead since an earlier day, and players without a phone, are
         left alone.
         """
-        for p in self.players:
-            if not p.phone or not self._publicly_alive(p):
-                continue
+        for p in self._phone_players():
             if p.prompt and p.prompt["kind"] == "choose" and p.prompt["answer"] is None:
                 continue
-            options = self.rng.sample(sorted(CHARACTERS), 6)
+            options = self.rng.sample(sorted(self.C), 6)
             target = self.rng.sample(options, 3)
             p.prompt = {"kind": "tap", "text": "Tap these three, in this order.", "target": target,
                         "options": options, "answer": None, "step": None}
@@ -398,25 +433,27 @@ class Game:
     def _build_steps(self) -> list[dict]:
         """Night order for this night, limited to characters that are in play.
 
-        Step schema: {"key": str, "pids": list[str], "choose": int, "allow_self": bool,
+        Step schema: {"key": str, "kind": str, "pids": list[str], "choose": int, "allow_self": bool,
                       "prompt": str, "choices": list[str], "answer": list[str] | None (phone pick),
-                      "suggestion": str | None,
-                      "sent": str | None (text held for dawn), "done": bool}
+                      "suggestion": str | None, "sent": str | None (text held for dawn), "done": bool}
         """
         steps = []
-        for key in FIRST_NIGHT if self.night == 1 else OTHER_NIGHTS:
-            if key in ("minion_info", "demon_info"):
-                if len(self.players) < EVIL_INFO_MIN_PLAYERS:
+        for key in self.script.FIRST_NIGHT if self.night == 1 else self.script.OTHER_NIGHTS:
+            if key in self.script.MEETINGS:
+                if len(self.players) < self.script.EVIL_INFO_MIN_PLAYERS:
                     continue
                 wanted = MINION if key == "minion_info" else DEMON
-                pids = [p.pid for p in self.players if CHARACTERS[p.character]["type"] == wanted]
+                pids = [p.pid for p in self.players if self._type_of(p) == wanted]
+                night = {"kind": "meeting"}
             else:
                 # living only: a dead Imp still holds the token after the Scarlet Woman or a star-pass takes over
                 pids = [p.pid for p in self.players if p.believed == key and p.alive]
-            if not pids:
+                night = self.C[key]["night"]
+            if not pids or night is None:
                 continue
-            count, allow_self, prompt = NIGHT_CHOICES.get(key, (0, True, ""))
-            steps.append({"key": key, "pids": pids, "choose": count, "allow_self": allow_self, "prompt": prompt,
+            choose = night["count"] if night["kind"] == "choose" else 0
+            steps.append({"key": key, "kind": night["kind"], "pids": pids, "choose": choose,
+                          "allow_self": night.get("allow_self", True), "prompt": night.get("prompt", ""),
                           "choices": [], "answer": None, "suggestion": None, "sent": None, "done": False})
         return steps
 
@@ -427,11 +464,10 @@ class Game:
         return self.steps[index]
 
     def step_applies(self, step: dict) -> bool:
-        """Whether a step's player should be woken now (alive, or Ravenkeeper killed tonight)."""
-        if step["key"] == "ravenkeeper":
-            return step["pids"][0] in self.night_deaths
-        if step["key"] == "undertaker" and not self.executed_today:
-            return False
+        """Whether a step's players should be woken now: the script decides, else everyone in it is alive."""
+        verdict = self.script.step_applies(self, step)
+        if verdict is not None:
+            return verdict
         return all(self.get(pid).alive for pid in step["pids"])
 
     def ask(self, step: int) -> None:
@@ -443,19 +479,13 @@ class Game:
                                          "allow_self": s["allow_self"], "answer": None, "step": step}
         s["answer"] = None
 
-    def resolve(self, step: int, choices: list[str], redirect: str | None = None,
-                new_demon: str | None = None) -> None:
-        """Apply a step's effect and compute the truthful info suggestion.
-
-        Algorithm: validate the chosen pids against the step's choice count; apply the effect
-        (Poisoner poisons, Monk protects if working, Butler sets Master, Imp attacks); then
-        store the info suggestion. Steps with no info to give are marked done.
+    def resolve(self, step: int, choices: list[str], **options) -> None:
+        """Apply a step's effect (via the script) and compute the truthful info suggestion.
 
         Args:
             step (int): index into self.steps.
             choices (list[str]): chosen pids, in order.
-            redirect (str | None): Imp only - pid that dies instead when the Mayor is attacked.
-            new_demon (str | None): Imp only - Minion pid who becomes the Imp on a self-kill.
+            **options: script-specific extras, e.g. the Imp's redirect / new_demon.
         """
         s = self._step(step)
         if len(choices) != s["choose"]:
@@ -464,69 +494,18 @@ class Game:
         actor = self.get(s["pids"][0])
         if not s["allow_self"] and actor in targets:
             raise GameError("This character cannot choose themselves")
-        key = s["key"]
-        # the Imp's pick triggers the second buzz, so check before anything is applied
-        if key == "imp" and not self.second_round_done:
+        # the Demon's pick triggers the second buzz, so check before anything is applied
+        demon_step = len(s["pids"]) == 1 and self._type_of(actor) == DEMON
+        if demon_step and not self.second_round_done:
             self._require_phones_done("the second buzz")
-        if key == "poisoner":
-            self.poisoned = targets[0].pid
-            self._log(f"Poisoner poisons {targets[0].name}")
-        elif key == "monk":
-            self.protected = None if self.impaired(actor) else targets[0].pid
-            self._log(f"Monk protects {targets[0].name}{' (no effect: impaired)' if self.impaired(actor) else ''}")
-        elif key == "butler":
-            self.master = targets[0].pid
-            self._log(f"Butler chooses {targets[0].name} as Master")
-        elif key == "imp":
-            self._demon_attack(actor, targets[0], redirect, new_demon)
-            if self.phase == "night":
-                self.second_round()
+        self.script.apply(self, s, actor, targets, options)
+        if demon_step and self.phase == "night":
+            self.second_round()
         s["choices"] = choices
-        s["suggestion"] = info.suggest(self, key, actor if len(s["pids"]) == 1 else None, targets)
+        s["suggestion"] = self.script.suggest(self, s["key"], actor if len(s["pids"]) == 1 else None, targets)
         if s["suggestion"] is None:
             s["done"] = True
             self._close_prompt(actor, step)
-
-    def _demon_attack(self, imp: Player, target: Player, redirect: str | None, new_demon: str | None) -> None:
-        """Imp kill: poisoned Imp fails; self-target star-passes; Monk, Soldier and Mayor may save."""
-        if self.impaired(imp):
-            self._log(f"Imp attacks {target.name}: no effect, Imp is poisoned")
-            return
-        if target is imp:
-            self._star_pass(imp, new_demon)
-            return
-        if redirect:
-            if not self._working(target, "mayor"):
-                raise GameError("Only an attack on a working Mayor can be redirected")
-            self._log(f"Imp attacks the Mayor; Storyteller redirects to {self.get(redirect).name}")
-            target = self.get(redirect)
-        if self.protected == target.pid:
-            self._log(f"Imp attacks {target.name}: saved by the Monk")
-        elif self._working(target, "soldier"):
-            self._log(f"Imp attacks {target.name}: the Soldier survives")
-        elif not target.alive:
-            self._log(f"Imp attacks {target.name}: already dead")
-        else:
-            self.night_deaths.append(target.pid)
-            self._die(target, "killed by the Demon")
-
-    def _star_pass(self, imp: Player, new_demon: str | None) -> None:
-        """Imp kills themselves: a living Minion (Scarlet Woman preferred) becomes the Imp."""
-        minions = [p for p in self.players if p.alive and self._type_of(p) == MINION]
-        heir = self.get(new_demon) if new_demon else (
-            next((p for p in minions if p.character == "scarlet_woman"), None)
-            or (self.rng.choice(minions) if minions else None))
-        if heir and heir not in minions:
-            raise GameError("The new Imp must be a living Minion")
-        if heir:
-            self._promote(heir, f"{imp.name} killed themselves")
-        self.night_deaths.append(imp.pid)
-        self._die(imp, "killed themselves as the Imp")
-
-    def _promote(self, heir: Player, why: str) -> None:
-        heir.character = heir.believed = "imp"
-        self._notify(heir.pid, "You are now the Imp.")
-        self._log(f"{heir.name} becomes the Imp ({why})")
 
     def _close_prompt(self, p: Player, step: int) -> None:
         """Clear p's prompt only if it belongs to this step (a Minion may hold their own prompt)."""
@@ -613,11 +592,11 @@ class Game:
     def start_day(self) -> None:
         """Dawn: every player gets their held info (or a blank slip), every phone buzzes, nominations open.
 
-        An Undertaker step the Storyteller did not send is worked out and sent automatically first.
+        The script first does whatever it sends automatically (e.g. an Undertaker step left open).
         """
         self._require("night")
         self._require_phones_done("dawn")
-        self._auto_undertaker()
+        self.script.before_dawn(self)
         self._flush(filler="Nothing to report tonight.")
         self.buzz += 1
         self.phase = "day"
@@ -630,25 +609,13 @@ class Game:
         dead = [self.get(pid).name for pid in self.night_deaths]
         self._announce(f"Dawn. {' and '.join(dead) + ' died' if dead else 'Nobody died'} in the night.")
 
-    def _auto_undertaker(self) -> None:
-        """Hold the truthful Undertaker info for dawn unless the Storyteller already sent or skipped it."""
-        for s in self.steps:
-            if s["key"] != "undertaker" or s["done"] or not self.step_applies(s):
-                continue
-            actor = self.get(s["pids"][0])
-            text = info.suggest(self, "undertaker", actor, [])
-            self._notify(actor.pid, text)
-            s["suggestion"], s["sent"], s["done"] = text, text, True
-            impaired = " (sent true info although they are drunk or poisoned)" if self.impaired(actor) else ""
-            self._log(f"Undertaker info sent automatically to {actor.name}: {text}{impaired}")
-
-    def nominate(self, nominator: str, nominee: str, spy_as_townsfolk: bool = False) -> None:
-        """Record a nomination; triggers the Virgin on their first nomination.
+    def nominate(self, nominator: str, nominee: str, **options) -> None:
+        """Record a nomination; the script may react (the Virgin).
 
         Args:
             nominator (str): pid, must be alive and not have nominated today.
             nominee (str): pid, must be alive and not have been nominated today.
-            spy_as_townsfolk (bool): if the nominator is the Spy, whether they register as Townsfolk.
+            **options: script-specific extras, e.g. spy_as_townsfolk.
         """
         self._require("day")
         if self.executed_today:
@@ -662,11 +629,7 @@ class Game:
             raise GameError(f"{b.name} has already been nominated today")
         self.nominations.append({"nominator": a.pid, "nominee": b.pid, "voters": [], "votes": None})
         self._announce(f"{a.name} nominates {b.name}.")
-        if b.character == "virgin" and not self.virgin_spent:
-            self.virgin_spent = True
-            townsfolk = self._type_of(a) == TOWNSFOLK or (a.character == "spy" and spy_as_townsfolk)
-            if townsfolk and not self.impaired(b):
-                self._execute(a)
+        self.script.on_nomination(self, a, b, options)
 
     def record_votes(self, nomination: int, voters: list[str]) -> None:
         """Set who voted on a nomination; dead voters spend their one ghost vote (refunded on re-record)."""
@@ -689,24 +652,17 @@ class Game:
         self._announce(f"{len(voters)} vote(s) to execute {self.get(n['nominee']).name} "
                        f"(needs {self.threshold()}).")
 
-    def slayer_shot(self, shooter: str, target: str, recluse_as_demon: bool = False) -> None:
-        """Public Slayer claim: kills the target only if shooter is a working, unspent Slayer and target is the Demon."""
+    def day_ability(self, pid: str, options: dict) -> None:
+        """A player's daytime ability, resolved by the script (the Slayer's shot, the Gossip's statement)."""
         self._require("day")
-        s, t = self.get(shooter), self.get(target)
-        self._announce(f"{s.name} claims Slayer and shoots {t.name}.")
-        hit = False
-        if s.alive and s.character == "slayer" and not self.slayer_spent:
-            self.slayer_spent = True
-            is_demon = self._type_of(t) == DEMON or (t.character == "recluse" and recluse_as_demon)
-            hit = not self.impaired(s) and is_demon and t.alive
-        if hit:
-            self._announce(f"{t.name} dies.")
-            self._die(t, "shot by the Slayer")
-        else:
-            self._announce("Nothing happens.")
+        self.script.day_ability(self, self.get(pid), options)
+
+    def slayer_shot(self, shooter: str, target: str, recluse_as_demon: bool = False) -> None:
+        """Public Slayer claim (older clients); see day_ability."""
+        self.day_ability(shooter, {"target": target, "recluse_as_demon": recluse_as_demon})
 
     def end_day(self) -> None:
-        """Dusk: execute the unique top nominee at or above threshold, check the Mayor, then start the night."""
+        """Dusk: execute the unique top nominee at or above threshold, let the script react, then start the night."""
         self._require("day")
         if not self.executed_today:
             t = self.threshold()
@@ -720,35 +676,42 @@ class Game:
                     self._announce("Tied vote: nobody is executed.")
             else:
                 self._announce("Nobody is executed.")
-        if not self.winner and not self.executed_today and self.alive_count() == 3 \
-                and any(self._working(p, "mayor") for p in self.players):
-            self._win("good", "Three players remain with no execution, and the Mayor lives.")
+        if not self.winner:
+            self.script.day_end(self)
         if not self.winner:
             self.start_night()
 
     def _execute(self, p: Player) -> None:
-        """Execute a player; a working Saint loses the game for good."""
+        """Execute a player; the script may react (a working Saint loses the game for good)."""
         self.executed_today = p.pid
         self._announce(f"{p.name} is executed.")
-        if self._working(p, "saint"):
-            self._win("evil", "The Saint was executed.")
         self._die(p, "executed")
+        if not p.alive:
+            self.script.on_execution(self, p)
 
     # --- deaths and wins ---
 
-    def _die(self, p: Player, cause: str) -> None:
-        """Kill a player: ends Poisoner's poison, may promote the Scarlet Woman, then checks for a win."""
+    def _die(self, p: Player, cause: str, force: bool = False) -> None:
+        """Kill a player unless the script saves them or asks the Storyteller; then check for a win.
+
+        cause is one of the script's cause words ("demon", "executed", "slayer", "storyteller", ...).
+        force skips the script's may_die (a death the Storyteller has already confirmed).
+        """
         if not p.alive:
             return
-        alive_before = self.alive_count()
+        verdict = True if force else self.script.may_die(self, p, cause)
+        if verdict is False:
+            return
+        if isinstance(verdict, str):
+            why = verdict.partition(":")[2].strip()
+            self.pending_deaths.append({"pid": p.pid, "cause": cause, "why": why})
+            self._log(f"{p.name} would die ({cause}): {why}")
+            return
         p.alive = False
-        self._log(f"{p.name} ({info.char_name(p.character)}) dies: {cause}")
-        if p.character == "poisoner":
-            self.poisoned = None
-        if self._type_of(p) == DEMON and not self._alive_demon() and alive_before >= 5:
-            sw = next((q for q in self.players if self._working(q, "scarlet_woman")), None)
-            if sw:
-                self._promote(sw, "the Demon died")
+        if self.phase == "night":
+            self.night_deaths.append(p.pid)
+        self._log(f"{p.name} ({self.cname(p.character)}) dies: {cause}")
+        self.script.on_death(self, p, cause)
         self._check_win()
 
     def _check_win(self) -> None:
@@ -768,10 +731,7 @@ class Game:
     def kill(self, pid: str) -> None:
         """Storyteller kills a player directly (win checks still apply)."""
         self._require("night", "day")
-        p = self.get(pid)
-        if self.phase == "night" and p.alive:
-            self.night_deaths.append(pid)
-        self._die(p, "Storyteller")
+        self._die(self.get(pid), "storyteller", force=True)
 
     def revive(self, pid: str) -> None:
         """Storyteller undoes a death."""
@@ -806,7 +766,7 @@ class Game:
 
     UNDO_DEPTH = 30
     # survive an undo: counters phones compare, notes players wrote, the record of what happened
-    _KEPT_ON_UNDO = ("version", "buzz", "inbox", "log", "history", "_next_pid", "phone_inputs")
+    _KEPT_ON_UNDO = ("version", "buzz", "inbox", "log", "history", "_next_pid", "phone_inputs", "clock", "script")
 
     def snapshot(self) -> dict:
         """Deep copy of everything an undo restores (all state except _KEPT_ON_UNDO)."""
@@ -859,7 +819,7 @@ class Game:
     def public_view(self) -> dict:
         """What every player may see. Characters are revealed only once the game is over.
 
-        Schema: {version, phase, night, day, counts: {type: int}, threshold, buzz,
+        Schema: {version, script: {id, name}, phase, night, day, counts: {type: int}, threshold, buzz,
                  seats: [{pid, name, alive, ghost_vote, character|None}],
                  announcements: [str], nominations: [{nominator, nominee, votes}],
                  winner: str|None, win_reason: str}
@@ -867,7 +827,8 @@ class Game:
         """
         over = self.phase == "over"
         return {
-            "version": self.version, "phase": self.phase, "night": self.night, "day": self.day,
+            "version": self.version, "script": {"id": self.script.ID, "name": self.script.NAME},
+            "phase": self.phase, "night": self.night, "day": self.day,
             "counts": self.counts, "buzz": self.buzz,
             # from the public alive count, so a night kill does not show early
             "threshold": math.ceil(sum(self._publicly_alive(p) for p in self.players) / 2),
@@ -889,7 +850,7 @@ class Game:
         started = self.phase in ("night", "day", "over")
         return {**self.public_view(), "me": {
             "pid": p.pid, "name": p.name, "alive": self._publicly_alive(p),
-            "role": {"id": p.believed, **CHARACTERS[p.believed]} if started and p.believed else None,
+            "role": {"id": p.believed, **self.C[p.believed]} if started and p.believed else None,
             "messages": p.messages, "prompt": p.prompt,
             "notes": [{"text": n["text"], "label": n["label"]} for n in self.inbox if n["pid"] == p.pid],
         }}
@@ -899,16 +860,17 @@ class Game:
 
         Extra keys over public_view: players [{pid, name, character, believed, alive, ghost_vote,
         impaired, answer}], red_herring, bluffs, poisoned, protected, master, virgin_spent,
-        slayer_spent, executed_today, night_deaths, steps (with applies / impaired / answer added),
-        nominations_full, queued {pid: [text]}, second_round_done, inbox [{pid, text, label, read}],
-        phones_done [done, total], phones [{pid, name, done}] (phone players a round waits for),
-        warnings, log, bluff_problems [str], undo (see undo_info).
+        slayer_spent, executed_today, night_deaths, pending_deaths, steps (with applies / impaired /
+        asked / hint added), nominations_full, queued {pid: [text]}, second_round_done,
+        inbox [{pid, text, label, read}], phones_done [done, total], phones [{pid, name, done}]
+        (phone players a round waits for), warnings, log, bluff_problems [str], undo (see undo_info).
         """
         steps = []
         for i, s in enumerate(self.steps):
             actor = self.get(s["pids"][0])
-            asked = bool(actor.prompt and actor.prompt.get("step") == i)
-            steps.append({**s, "applies": self.step_applies(s), "impaired": self.impaired(actor), "asked": asked})
+            hint = self.script.MEETINGS[s["key"]]["hint"] if s["key"] in self.script.MEETINGS else self.C[s["key"]]["hint"]
+            steps.append({**s, "applies": self.step_applies(s), "impaired": self.impaired(actor),
+                          "asked": self._asked(i), "hint": hint})
         return {
             **self.public_view(),
             "players": [{"pid": p.pid, "name": p.name, "character": p.character, "believed": p.believed,
@@ -917,7 +879,8 @@ class Game:
             "red_herring": self.red_herring, "bluffs": self.bluffs, "poisoned": self.poisoned,
             "protected": self.protected, "master": self.master, "virgin_spent": self.virgin_spent,
             "slayer_spent": self.slayer_spent, "executed_today": self.executed_today,
-            "night_deaths": self.night_deaths, "steps": steps, "nominations_full": self.nominations,
+            "night_deaths": self.night_deaths, "pending_deaths": self.pending_deaths, "steps": steps,
+            "nominations_full": self.nominations,
             "queued": {pid: texts for pid, texts in self.queued.items()}, "second_round_done": self.second_round_done,
             "inbox": self.inbox, "phones_done": list(self.phones_done()),
             "phones": [{"pid": p.pid, "name": p.name, "done": p not in self.phones_waiting()} for p in self._phone_players()],
