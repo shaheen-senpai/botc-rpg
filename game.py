@@ -98,6 +98,8 @@ class Game:
         self.died_today: list[str] = []
         # the script's own bookkeeping (last picks, the Po's empty night...); undo restores it with the rest
         self.script_state: dict = {}
+        # pids whose night step was resolved tonight (the Chambermaid counts these)
+        self.woke_tonight: list[str] = []
         # deaths the script wants the Storyteller to decide: [{"pid", "cause", "why"}]
         self.pending_deaths: list[dict] = []
         self.steps: list[dict] = []
@@ -190,6 +192,11 @@ class Game:
 
     def is_good(self, cid: str) -> bool:
         return scripts.is_good(self.C, cid)
+
+    def good(self, p: Player) -> bool:
+        """The player's alignment: their character's team unless the script changed it (the Goon)."""
+        team = self.script_state.get("team", {}).get(p.pid)
+        return team == "good" if team else self.is_good(p.character)
 
     def get(self, pid: str | None) -> Player:
         """Player by public id."""
@@ -433,6 +440,7 @@ class Game:
         self.night += 1
         self._expire("night")
         self.night_deaths = []
+        self.woke_tonight = []
         self.second_round_done = False
         self.waiting_stopped = False
         for p in self.players:
@@ -539,8 +547,10 @@ class Game:
                 pids = [p.pid for p in self.players if self._type_of(p) == wanted]
                 night = {"kind": "meeting"}
             else:
-                # living only: a dead Imp still holds the token after the Scarlet Woman or a star-pass takes over
-                pids = [p.pid for p in self.players if p.believed == key and p.alive]
+                # living only (a dead Imp still holds the token after a star-pass), except characters that act
+                # because they died (the Moonchild)
+                on_death = self.C[key]["uses"] == "on_death"
+                pids = [p.pid for p in self.players if p.believed == key and (p.alive or on_death)]
                 night = self.C[key]["night"]
                 if night and self.night == 1 and night.get("first"):
                     night = night["first"]   # e.g. the Godfather learns the Outsiders on night 1 and kills later
@@ -560,7 +570,11 @@ class Game:
         return self.steps[index]
 
     def step_applies(self, step: dict) -> bool:
-        """Whether a step's players should be woken now: the script decides, else everyone in it is alive."""
+        """Whether a step's players should be woken now: a spent once-per-game ability sleeps, the script
+        decides the rest, else everyone in it is alive."""
+        key = step["key"]
+        if key in self.C and self.C[key]["uses"] == "once_per_game" and self.get(step["pids"][0]).used:
+            return False
         verdict = self.script.step_applies(self, step)
         if verdict is not None:
             return verdict
@@ -595,6 +609,8 @@ class Game:
         if demon_step and not self.second_round_done:
             self._require_phones_done("the second buzz")
         self.script.apply(self, s, actor, targets, options)
+        if len(s["pids"]) == 1 and actor.pid not in self.woke_tonight:
+            self.woke_tonight.append(actor.pid)
         if demon_step and self.phase == "night":
             self.second_round()
         s["choices"] = choices
@@ -1046,6 +1062,8 @@ class Game:
         if self.winner:
             return
         if not self._alive_demon():
+            if self.script_state.get("extra_day") is not None:
+                return   # the script (Mastermind) keeps the game going one more day
             self._win("good", "The Demon is dead.")
         elif self.alive_count() <= 2:
             self._win("evil", "Only two players remain and the Demon is one of them.")

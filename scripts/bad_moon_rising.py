@@ -222,11 +222,44 @@ DEMONS = ("zombuul", "pukka", "shabaloth", "po")
 
 
 def step_applies(game: Game, step: dict) -> bool | None:
-    actor = game.get(step["pids"][0])
-    if step["key"] == "zombuul" and game.died_today:
+    actor, S = game.get(step["pids"][0]), game.script_state
+    key = step["key"]
+    if key == "zombuul" and game.died_today:
         return False
-    if step["key"] in DEMONS and actor.character != "lunatic" and game.has(actor, "exorcised"):
+    if key in DEMONS and actor.character != "lunatic" and game.has(actor, "exorcised"):
         return False
+    if key == "godfather" and game.night > 1:
+        return actor.alive and any(CHARACTERS[game.get(pid).character]["type"] == OUTSIDER for pid in game.died_today)
+    if key == "gossip":
+        return actor.alive and bool(S.get("gossip_true"))
+    if key == "moonchild":
+        return bool(S.get("moonchild"))
+    return None
+
+
+def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -> str | None:
+    S = game.script_state
+    if key == "grandmother":
+        if "grandchild" not in S:
+            child = game.rng.choice([q for q in game.players if q is not actor and game.good(q)])
+            S["grandchild"] = child.pid
+            game.mark(child, "grandchild")
+        child = game.get(S["grandchild"])
+        return f"Your grandchild is {child.name}, the {cname(child.character)}."
+    if key == "godfather":
+        outs = [cname(q.character) for q in game.players if CHARACTERS[q.character]["type"] == OUTSIDER]
+        return f"The Outsiders in play are {' and '.join(outs)}." if outs else "There are no Outsiders in play."
+    if key == "chambermaid":
+        woke = sum(t.pid in game.woke_tonight for t in targets)
+        return f"{woke} of them woke tonight."
+    if key == "minion_info":
+        demon = ", ".join(q.name for q in game.players if CHARACTERS[q.character]["type"] == DEMON)
+        minions = ", ".join(q.name for q in game.players if CHARACTERS[q.character]["type"] == MINION)
+        return f"The Demon is {demon}. The Minions are {minions}."
+    if key == "demon_info":
+        minions = ", ".join(q.name for q in game.players if CHARACTERS[q.character]["type"] == MINION)
+        bluffs = ", ".join(cname(b) for b in game.bluffs)
+        return f"Your Minions are {minions}. These good characters are not in play (safe bluffs): {bluffs}."
     return None
 
 
@@ -241,9 +274,21 @@ def _different_from_last_night(game: Game, key: str, target: Player) -> None:
     game.script_state[f"last_{key}"] = target.pid
 
 
+def _goon(game: Game, actor: Player, targets: list[Player]) -> None:
+    """The first player to choose the Goon tonight is drunk until dusk, and the Goon joins their team."""
+    S = game.script_state
+    for t in targets:
+        if game._working(t, "goon") and S.get("goon_night") != game.night:
+            S["goon_night"] = game.night
+            game.mark(actor, "drunk", "night")
+            S.setdefault("team", {})[t.pid] = "good" if game.good(actor) else "evil"
+            game._log(f"{actor.name} chose the Goon: {actor.name} is drunk, the Goon is now {S['team'][t.pid]}")
+
+
 def apply(game: Game, step: dict, actor: Player, targets: list[Player], options: dict) -> None:
-    """State effects of a choose step."""
+    """State effects of a choose or storyteller step."""
     key, S = step["key"], game.script_state
+    _goon(game, actor, targets)
     if actor.character == "lunatic":
         # the Lunatic acts as their believed Demon: nothing happens, the real Demon hears about it at dawn
         S["lunatic_picks"] = [t.name for t in targets]
@@ -295,10 +340,67 @@ def apply(game: Game, step: dict, actor: Player, targets: list[Player], options:
             game.mark(t, "protected", "dawn")
         game.mark(game.get(drunk), "drunk", "night")
         game._log(f"Innkeeper protects {' and '.join(t.name for t in targets)}; {game.get(drunk).name} is drunk")
-
-
-def suggest(game: Game, key: str, actor: Player | None, targets: list[Player]) -> str | None:
-    return None
+    elif key == "sailor":
+        drunk = game.get(options.get("drunk") or targets[0].pid)
+        game.mark(drunk, "drunk", "night")
+        game._log(f"Sailor picks {targets[0].name}: {drunk.name} is drunk until dusk")
+    elif key == "devilsadvocate":
+        _different_from_last_night(game, key, targets[0])
+        if not game.impaired(actor):
+            game.mark(targets[0], "survives execution", "night")
+        game._log(f"Devil's Advocate picks {targets[0].name}")
+    elif key == "gambler":
+        guess = options.get("guess")
+        if guess not in CHARACTERS:
+            raise game.error("The Gambler also guesses a character")
+        if not game.impaired(actor) and guess != targets[0].character:
+            game._log(f"Gambler guesses {targets[0].name} is the {cname(guess)}: wrong")
+            game._die(actor, "gambler")
+        else:
+            game._log(f"Gambler guesses {targets[0].name} is the {cname(guess)}: {'right' if guess == targets[0].character else 'no effect, drunk or poisoned'}")
+    elif key == "courtier":
+        character = options.get("character")
+        if character not in CHARACTERS:
+            raise game.error("The Courtier names a character")
+        actor.used = True
+        holder = next((q for q in game.players if q.character == character and q.alive), None)
+        if holder and not game.impaired(actor):
+            game.mark(holder, "drunk 3")
+            game._log(f"Courtier names the {cname(character)}: {holder.name} is drunk for three nights and days")
+        else:
+            game._log(f"Courtier names the {cname(character)}: {'not in play' if not holder else 'no effect, drunk or poisoned'}")
+    elif key == "professor":
+        actor.used = True
+        t = targets[0]
+        if not game.impaired(actor) and not t.alive and CHARACTERS[t.character]["type"] == TOWNSFOLK:
+            game.revive(t.pid)
+            game._notify(t.pid, "You are alive again.")
+            game._log(f"Professor resurrects {t.name}")
+        else:
+            game._log(f"Professor picks {t.name}: nothing happens")
+    elif key == "assassin":
+        actor.used = True
+        if game.impaired(actor):
+            game._log("Assassin acts: no effect, drunk or poisoned")
+        else:
+            game._die(targets[0], "assassin")
+    elif key == "godfather" and targets:   # night 1 is information only
+        if not game.impaired(actor):
+            game._die(targets[0], "godfather")
+    elif key == "gossip":
+        dies = options.get("dies")
+        if dies and not game.impaired(actor):
+            game._die(game.get(dies), "gossip")
+        S["gossip_true"] = False
+    elif key == "tinker":
+        if options.get("dies"):
+            game._die(actor, "tinker")
+    elif key == "moonchild":
+        pick = game.get(S.pop("moonchild", None))
+        if game.good(pick) and not game.impaired(actor):
+            game._die(pick, "moonchild")
+        else:
+            game._log(f"Moonchild's pick {pick.name} is evil (or the Moonchild is drunk): no death")
 
 
 # --- deaths ---
@@ -346,11 +448,25 @@ def may_die(game: Game, p: Player, cause: str) -> bool | str:
 
 
 def on_death(game: Game, p: Player, cause: str) -> None:
-    return None
+    """The Grandmother dies with her grandchild; the Mastermind keeps the game going after the Demon's execution."""
+    S = game.script_state
+    if game.has(p, "grandchild") and cause == "demon":
+        gran = next((q for q in game.players if game._working(q, "grandmother")), None)
+        if gran:
+            game._die(gran, "grandmother")
+    if CHARACTERS[p.character]["type"] == DEMON and cause == "executed" and not game._alive_demon() \
+            and any(game._working(q, "mastermind") for q in game.players):
+        S["extra_day"] = game.day + 1
+        game._announce("The game goes on for one more day.")
 
 
 def on_execution(game: Game, p: Player) -> None:
-    return None
+    """A Minion executed with a working Minstrel in play: everyone else is drunk until dusk tomorrow."""
+    if CHARACTERS[p.character]["type"] == MINION and any(game._working(q, "minstrel") for q in game.players):
+        for q in game.players:
+            if q is not p and q.alive and q.character != "minstrel":
+                game.mark(q, "drunk 2")
+        game._log("A Minion was executed: the Minstrel makes everyone else drunk until tomorrow's dusk")
 
 
 def on_nomination(game: Game, nominator: Player, nominee: Player, options: dict) -> None:
@@ -358,12 +474,45 @@ def on_nomination(game: Game, nominator: Player, nominee: Player, options: dict)
 
 
 def day_ability(game: Game, p: Player, options: dict) -> None:
-    raise game.error("Nothing to do")
+    """Gossip: was today's statement true. Moonchild (dead): who they chose."""
+    S = game.script_state
+    if p.character == "gossip":
+        S["gossip_true"] = bool(options.get("true"))
+        game._log(f"Gossip's statement was {'true' if S['gossip_true'] else 'false'}")
+    elif p.character == "moonchild":
+        if p.alive:
+            raise game.error("The Moonchild chooses when they learn they died")
+        t = game.get(options.get("target"))
+        S["moonchild"] = t.pid
+        game._announce(f"{p.name}, the Moonchild, chooses {t.name}.")
+    else:
+        raise game.error(f"The {cname(p.character)} has no daytime ability")
 
 
 def before_dawn(game: Game) -> None:
-    return None
+    game.script_state["gossip_true"] = False
+
+
+def _count_down_drunk(game: Game) -> None:
+    for q in game.players:
+        for r in list(q.reminders):
+            if r["text"].startswith("drunk ") and r["text"].split()[1].isdigit():
+                left = int(r["text"].split()[1]) - 1
+                game.unmark(q, r["text"])
+                if left > 0:
+                    game.mark(q, f"drunk {left}")
 
 
 def day_end(game: Game) -> None:
-    return None
+    """Dusk: the Mastermind's extra day resolves; timed drunkenness counts down."""
+    S = game.script_state
+    if S.get("extra_day") == game.day:
+        S.pop("extra_day")
+        if game.executed_today:
+            executed = game.get(game.executed_today)
+            loser_good = game.good(executed)
+            game._win("evil" if loser_good else "good", f"{executed.name} was executed on the Mastermind's extra day.")
+        else:
+            game._win("good", "The Demon is dead and nobody was executed on the Mastermind's extra day.")
+        return
+    _count_down_drunk(game)

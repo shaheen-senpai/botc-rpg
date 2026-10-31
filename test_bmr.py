@@ -177,3 +177,150 @@ def test_lunatic_attacks_are_shown_to_the_demon_and_kill_nobody():
     g.resolve(step(g, "po"), [])
     g.start_day()
     assert "Lunatic" in p(g, "Asha").thread[-1]["text"] and "Dev" in p(g, "Asha").thread[-1]["text"]
+
+
+# --- the rest of the script ---
+
+def execute(g: Game, nominator: str, nominee: str) -> None:
+    g.nominate(p(g, nominator).pid, p(g, nominee).pid)
+    g.record_votes(len(g.nominations) - 1, [x.pid for x in g.players if g._publicly_alive(x)][:4])
+    g.end_day()
+
+
+def test_gambler_wrong_guess_dies():
+    g = make(["po", "assassin", "gambler", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "gambler"), [p(g, "Dev").pid], guess="sailor")
+    assert p(g, "Chen").alive
+    to_night(g)
+    g.resolve(step(g, "gambler"), [p(g, "Ema").pid], guess="fool")
+    assert not p(g, "Chen").alive
+
+
+def test_courtier_drunk_counts_down():
+    g = make(["po", "assassin", "courtier", "sailor", "gossip", "tinker", "fool"])
+    g.resolve(step(g, "courtier"), [], character="sailor")
+    assert g.has(p(g, "Dev"), "drunk 3") and p(g, "Chen").used
+    to_night(g)
+    assert g.has(p(g, "Dev"), "drunk 2") and g.impaired(p(g, "Dev"))
+    to_night(g)
+    assert g.has(p(g, "Dev"), "drunk 1")
+    to_night(g)
+    assert not g.impaired(p(g, "Dev"))
+    assert g.step_applies(g.steps[step(g, "courtier")]) is False   # once per game
+
+
+def test_professor_revives_townsfolk_once():
+    g = make(["po", "assassin", "professor", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.kill(p(g, "Ema").pid)
+    g.resolve(step(g, "professor"), [p(g, "Ema").pid])
+    assert p(g, "Ema").alive and p(g, "Chen").used
+    to_night(g)
+    assert g.step_applies(g.steps[step(g, "professor")]) is False
+
+
+def test_assassin_ignores_protection_and_is_once():
+    g = make(["po", "assassin", "innkeeper", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "innkeeper"), [p(g, "Ema").pid, p(g, "Finn").pid], drunk=p(g, "Finn").pid)
+    g.resolve(step(g, "assassin"), [p(g, "Ema").pid])
+    assert not p(g, "Ema").alive and p(g, "Ben").used
+    to_night(g)
+    assert g.step_applies(g.steps[step(g, "assassin")]) is False
+
+
+def test_godfather_kills_only_after_outsider_death():
+    g = make(["po", "godfather", "sailor", "gossip", "tinker", "goon", "fool"])
+    g.resolve(step(g, "godfather"), [])
+    assert "Tinker" in g.steps[step(g, "godfather")]["suggestion"] and "Goon" in g.steps[step(g, "godfather")]["suggestion"]
+    to_night(g)
+    assert g.step_applies(g.steps[step(g, "godfather")]) is False
+    g.start_day()
+    g.kill(p(g, "Ema").pid)   # the Tinker dies by day
+    g.end_day()
+    assert g.step_applies(g.steps[step(g, "godfather")]) is True
+    g.resolve(step(g, "godfather"), [p(g, "Dev").pid])
+    assert not p(g, "Dev").alive
+
+
+def test_goon_drunks_first_chooser_and_changes_team():
+    g = make(["po", "assassin", "sailor", "goon", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "po"), [p(g, "Dev").pid])
+    assert g.has(p(g, "Asha"), "drunk") and p(g, "Dev").alive and not g.good(p(g, "Dev"))
+
+
+def test_grandmother_dies_with_grandchild():
+    g = make(["po", "assassin", "grandmother", "gossip", "gambler", "tinker", "tealady"])
+    g.resolve(step(g, "grandmother"), [])
+    child = g.get(g.script_state["grandchild"])
+    assert child.name in g.steps[step(g, "grandmother")]["suggestion"] and g.has(child, "grandchild")
+    to_night(g)
+    g.resolve(step(g, "po"), [child.pid])
+    assert not child.alive and not p(g, "Chen").alive
+
+
+def test_minstrel_drunks_everyone_when_minion_executed():
+    g = make(["po", "assassin", "minstrel", "sailor", "gossip", "tinker", "fool"])
+    g.start_day()
+    execute(g, "Chen", "Ben")
+    assert not p(g, "Ben").alive
+    assert all(g.impaired(x) for x in g.players if x.name not in ("Chen", "Ben"))
+    g.start_day()
+    assert g.impaired(p(g, "Dev"))
+    g.end_day()
+    assert not g.impaired(p(g, "Dev"))
+
+
+def test_mastermind_gives_one_more_day():
+    g = make(["po", "mastermind", "sailor", "gossip", "gambler", "tinker", "fool"])
+    g.start_day()
+    execute(g, "Chen", "Asha")
+    assert not p(g, "Asha").alive and g.winner is None and g.phase == "night"
+    g.start_day()
+    execute(g, "Chen", "Dev")   # a good player executed on the extra day: good loses
+    assert g.winner == "evil"
+
+
+def test_mastermind_day_without_execution_is_a_good_win():
+    g = make(["po", "mastermind", "sailor", "gossip", "gambler", "tinker", "fool"])
+    g.start_day()
+    execute(g, "Chen", "Asha")
+    g.start_day()
+    g.end_day()
+    assert g.winner == "good"
+
+
+def test_gossip_true_statement_kills_at_night():
+    g = make(["po", "assassin", "gossip", "sailor", "gambler", "tinker", "fool"])
+    to_night(g)
+    assert g.step_applies(g.steps[step(g, "gossip")]) is False
+    g.start_day()
+    g.day_ability(p(g, "Chen").pid, {"true": True})
+    g.end_day()
+    assert g.step_applies(g.steps[step(g, "gossip")]) is True
+    g.resolve(step(g, "gossip"), [], dies=p(g, "Ema").pid)
+    assert not p(g, "Ema").alive
+
+
+def test_moonchild_pick_dies_if_good():
+    g = make(["po", "assassin", "moonchild", "sailor", "gambler", "tinker", "fool"])
+    g.start_day()
+    g.kill(p(g, "Chen").pid)
+    g.day_ability(p(g, "Chen").pid, {"target": p(g, "Ema").pid})
+    g.end_day()
+    assert g.step_applies(g.steps[step(g, "moonchild")]) is True
+    g.resolve(step(g, "moonchild"), [])
+    assert not p(g, "Ema").alive
+
+
+def test_chambermaid_counts_who_woke():
+    g = make(["po", "assassin", "chambermaid", "sailor", "gossip", "tinker", "fool"])
+    to_night(g)
+    g.resolve(step(g, "sailor"), [p(g, "Ema").pid])
+    g.resolve(step(g, "po"), [p(g, "Finn").pid])
+    g.resolve(step(g, "chambermaid"), [p(g, "Dev").pid, p(g, "Asha").pid])
+    assert g.steps[step(g, "chambermaid")]["suggestion"] == "2 of them woke tonight."
+    g.resolve(step(g, "chambermaid"), [p(g, "Dev").pid, p(g, "Ema").pid])
+    assert g.steps[step(g, "chambermaid")]["suggestion"] == "1 of them woke tonight."
